@@ -1,0 +1,8 @@
+time,ts,gateway,gateway_mac_address,node_id,counter,tilt_x,tilt_y,vibration_magnitude,vibration_detected,battery_voltage,battery_percentage,status,score,reasons
+2026-11-18 16:41:23,1795000283.392,Jharia Seam #11 Gateway (Dhanbad),A4:C1:38:90:12:01,1,101,0.139,-0.06,0.0155,0,4.12,92.0,normal,0.061,All subsidence metrics within baseline thresholds
+2026-11-18 16:41:23,1795000283.392,Jharia Seam #11 Gateway (Dhanbad),A4:C1:38:90:12:01,2,101,0.66,0.333,0.0862,0,3.95,74.0,watch,0.296,Watch tilt change: 0.74° (0.5° - 1.0°); Watch vibration RMS: 0.086g (0.05g - 0.15g)
+2026-11-18 16:41:23,1795000283.392,Jharia Seam #11 Gateway (Dhanbad),A4:C1:38:90:12:01,3,101,1.457,-0.915,0.1866,0,3.82,58.0,warning,0.688,Warning tilt change: 1.72° (1.0° - 2.0°); Warning vibration RMS: 0.187g (0.15g - 0.30g)
+2026-11-18 16:41:23,1795000283.392,Jharia Seam #11 Gateway (Dhanbad),A4:C1:38:90:12:01,4,101,2.75,1.95,0.42,1,4.05,86.0,critical,1.0,Critical tilt change: 3.37° (> 2.0°); Critical vibration RMS: 0.420g (> 0.30g)
+2026-11-18 16:41:23,1795000283.392,Raniganj East Colliery Gateway (Asansol),BC:FF:4D:11:88:99,1,101,0.079,0.06,0.0144,0,4.18,95.0,normal,0.04,All subsidence metrics within baseline thresholds
+2026-11-18 16:41:23,1795000283.392,Raniganj East Colliery Gateway (Asansol),BC:FF:4D:11:88:99,2,101,2.357,1.821,0.3381,1,3.32,14.0,critical,1.0,Critical tilt change: 2.98° (> 2.0°); Critical vibration RMS: 0.338g (> 0.30g); Low battery warning: 14% (3.32V)
+2026-11-18 16:41:23,1795000283.392,Raniganj East Colliery Gateway (Asansol),BC:FF:4D:11:88:99,3,101,0.239,-0.15,0.0254,0,3.9,68.0,normal,0.113,All subsidence metrics within baseline thresholds

@@ -1,0 +1,944 @@
+/* ==========================================================================
+   NEO-BRUTALIST / EDITORIAL ZINE DESIGN SYSTEM
+   Coal Mine Subsidence Monitoring Platform
+   ========================================================================== */
+
+:root {
+  --saffron: #e0651e;
+  --saffron-2: #f0823a;
+  --saffron-deep: #b84915;
+  --green: #1f5a2e;
+  --green-2: #2d7a45;
+  --ink: #1a1108;
+  --ink-2: #3a2a1c;
+  --ink-3: #6a5440;
+  --paper: #f4ebd7;
+  --paper-2: #eadfc4;
+  --paper-3: #dbcba5;
+  --blood: #8b1a1a;
+  --gold: #c9a227;
+
+  --display: 'Bowlby One SC', "Impact", sans-serif;
+  --condensed: 'Oswald', "Arial Narrow", sans-serif;
+  --sans: 'Inter', -apple-system, system-ui, sans-serif;
+  --serif: Georgia, 'Times New Roman', serif;
+  --mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --max: 1380px;
+  --gutter: 24px;
+  --rule: var(--ink);
+  --border-width: 3px;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border-radius: 0px !important; /* Sharp 0px border-radii across entire UI */
+}
+
+body {
+  background-color: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+  position: relative;
+  background-image: radial-gradient(var(--paper-3) 1px, transparent 0);
+  background-size: 24px 24px;
+}
+
+/* ==========================================================================
+   UNIVERSAL PRESS-DOWN MOTION ON HOVER & CLICK
+   ========================================================================== */
+button, .btn-submit, .btn-action, .neo-btn {
+  font-family: var(--condensed);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: var(--paper-2);
+  color: var(--ink);
+  border: var(--border-width) solid var(--ink) !important;
+  padding: 8px 16px;
+  cursor: pointer;
+  outline: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: transform 0.1s ease, box-shadow 0.1s ease !important;
+  box-shadow: 4px 4px 0px var(--ink) !important;
+  user-select: none;
+}
+
+button:hover, .btn-submit:hover, .btn-action:hover, .neo-btn:hover {
+  transform: translate(2px, 2px) !important;
+  box-shadow: 2px 2px 0px var(--ink) !important;
+}
+
+button:active, .btn-submit:active, .btn-action:active, .neo-btn:active {
+  transform: translate(4px, 4px) !important;
+  box-shadow: 0px 0px 0px var(--ink) !important;
+}
+
+/* Button Variants */
+.btn-primary {
+  background: var(--saffron) !important;
+  color: #ffffff !important;
+}
+.btn-primary:hover {
+  background: var(--saffron-2) !important;
+}
+.btn-danger {
+  background: var(--blood) !important;
+  color: #ffffff !important;
+}
+.btn-success {
+  background: var(--green) !important;
+  color: #ffffff !important;
+}
+.btn-gold {
+  background: var(--gold) !important;
+  color: var(--ink) !important;
+}
+.btn-small {
+  padding: 4px 10px !important;
+  font-size: 12px !important;
+  box-shadow: 3px 3px 0px var(--ink) !important;
+}
+.btn-small:hover {
+  box-shadow: 1px 1px 0px var(--ink) !important;
+}
+
+/* ==========================================================================
+   EDITORIAL MASTHEAD / TOP BAR
+   ========================================================================== */
+.masthead {
+  border-bottom: var(--border-width) solid var(--ink);
+  background: var(--paper-2);
+  padding: 12px var(--gutter);
+}
+
+.masthead-inner {
+  max-width: var(--max);
+  margin: 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.brand-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.brand-title {
+  font-family: var(--display);
+  font-size: 26px;
+  line-height: 1.1;
+  color: var(--ink);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.brand-subtitle {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 13px;
+  color: var(--blood);
+  font-weight: bold;
+}
+
+.masthead-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.user-badge {
+  background: var(--paper);
+  border: 2px solid var(--ink);
+  padding: 4px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.user-badge .role-tag {
+  background: var(--ink);
+  color: var(--paper);
+  padding: 1px 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+/* Demo Control Bar */
+.demo-bar {
+  background: var(--paper-3);
+  border-bottom: var(--border-width) solid var(--ink);
+  padding: 8px var(--gutter);
+  font-size: 13px;
+}
+
+.demo-bar-inner {
+  max-width: var(--max);
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.demo-controls-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.demo-tag {
+  font-family: var(--condensed);
+  background: var(--blood);
+  color: #fff;
+  padding: 2px 8px;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+}
+
+/* ==========================================================================
+   ALERT BANNER & NOTIFICATION TICKER
+   ========================================================================== */
+#criticalAlertBanner {
+  display: none;
+  background: var(--blood);
+  color: #ffffff;
+  border-bottom: var(--border-width) solid var(--ink);
+  padding: 10px var(--gutter);
+  font-family: var(--mono);
+  font-weight: 700;
+  animation: pulseBg 1.5s infinite;
+}
+
+@keyframes pulseBg {
+  0% { background-color: var(--blood); }
+  50% { background-color: #5c0f0f; }
+  100% { background-color: var(--blood); }
+}
+
+.alert-banner-inner {
+  max-width: var(--max);
+  margin: 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* Placement Mode Banner */
+#placementModeBanner {
+  display: none;
+  background: var(--saffron);
+  color: #ffffff;
+  border-bottom: var(--border-width) solid var(--ink);
+  padding: 10px var(--gutter);
+  font-family: var(--condensed);
+  font-size: 16px;
+  text-align: center;
+}
+
+.placement-banner-inner {
+  max-width: var(--max);
+  margin: 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ==========================================================================
+   MAIN DASHBOARD GRID LAYOUT
+   ========================================================================== */
+.container {
+  max-width: var(--max);
+  margin: 20px auto;
+  padding: 0 var(--gutter);
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 24px;
+}
+
+@media (max-width: 1024px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ==========================================================================
+   EDITORIAL SECTION CARDS & BOXES
+   ========================================================================== */
+.zine-box {
+  background: var(--paper-2);
+  border: var(--border-width) solid var(--ink);
+  box-shadow: 6px 6px 0px var(--ink);
+  margin-bottom: 24px;
+  position: relative;
+}
+
+.zine-header {
+  background: var(--paper-3);
+  border-bottom: var(--border-width) solid var(--ink);
+  padding: 10px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.zine-header h2, .zine-header h3 {
+  font-family: var(--condensed);
+  font-size: 18px;
+  text-transform: uppercase;
+  color: var(--ink);
+  letter-spacing: 0.5px;
+}
+
+.zine-content {
+  padding: 16px;
+}
+
+/* ==========================================================================
+   INDIA MAP SECTION
+   ========================================================================== */
+.map-container-box {
+  background: #ffffff;
+  border: var(--border-width) solid var(--ink);
+  box-shadow: 6px 6px 0px var(--ink);
+  margin-bottom: 24px;
+}
+
+.map-toolbar {
+  background: var(--paper-2);
+  border-bottom: var(--border-width) solid var(--ink);
+  padding: 8px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.map-presets {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.map-preset-label {
+  font-family: var(--condensed);
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+#map {
+  width: 100%;
+  height: 540px;
+  border: none;
+  background: var(--paper-3);
+}
+
+.placement-cursor #map {
+  cursor: crosshair !important;
+}
+
+/* Map Legend */
+.map-legend {
+  background: var(--paper-2);
+  border-top: var(--border-width) solid var(--ink);
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-family: var(--condensed);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.legend-items {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-swatch {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--ink);
+  display: inline-block;
+}
+
+.swatch-normal { background: var(--green); }
+.swatch-watch { background: var(--gold); }
+.swatch-warning { background: var(--saffron); }
+.swatch-critical { background: var(--blood); }
+
+/* ==========================================================================
+   CUSTOM LEAFLET MAP MARKERS (NEO-BRUTALIST)
+   ========================================================================== */
+.neo-marker-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  cursor: pointer;
+  position: relative;
+}
+
+.neo-marker-pin {
+  border: 2.5px solid var(--ink);
+  font-family: var(--display);
+  font-size: 11px;
+  color: #ffffff;
+  padding: 4px 7px;
+  box-shadow: 3px 3px 0px var(--ink);
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  transition: transform 0.1s ease;
+}
+
+.neo-marker-pin:hover {
+  transform: scale(1.1);
+}
+
+.neo-marker-pin.normal {
+  background: var(--green);
+}
+.neo-marker-pin.watch {
+  background: var(--gold);
+  color: var(--ink);
+}
+.neo-marker-pin.warning {
+  background: var(--saffron);
+}
+.neo-marker-pin.critical {
+  background: var(--blood);
+  animation: markerPulsate 1s infinite alternate;
+}
+
+@keyframes markerPulsate {
+  0% { box-shadow: 3px 3px 0px var(--ink); }
+  100% { box-shadow: 0px 0px 10px 4px var(--blood), 3px 3px 0px var(--ink); }
+}
+
+/* Low Battery Indicator above node */
+.marker-battery-low {
+  background: #ffcc00;
+  color: #000;
+  border: 2px solid var(--ink);
+  font-family: var(--condensed);
+  font-size: 10px;
+  font-weight: 900;
+  padding: 1px 4px;
+  margin-bottom: 2px;
+  box-shadow: 2px 2px 0px var(--ink);
+  animation: bounceLowBatt 1s infinite;
+}
+
+@keyframes bounceLowBatt {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+
+/* ==========================================================================
+   UNPLACED NODES DRAWER / CARD
+   ========================================================================== */
+.unplaced-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.unplaced-item {
+  background: var(--paper);
+  border: 2px solid var(--ink);
+  padding: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  box-shadow: 3px 3px 0px var(--ink);
+}
+
+.unplaced-meta {
+  display: flex;
+  flex-direction: column;
+}
+
+.unplaced-title {
+  font-family: var(--condensed);
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.unplaced-sub {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+/* ==========================================================================
+   GATEWAYS & NODES INVENTORY LIST
+   ========================================================================== */
+.gateway-branch-box {
+  background: var(--paper);
+  border: 2px solid var(--ink);
+  margin-bottom: 12px;
+  box-shadow: 3px 3px 0px var(--ink);
+}
+
+.gateway-branch-header {
+  background: var(--paper-3);
+  border-bottom: 2px solid var(--ink);
+  padding: 8px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.gateway-title {
+  font-family: var(--condensed);
+  font-weight: 700;
+  font-size: 14px;
+  text-transform: uppercase;
+}
+
+.gateway-mac-tag {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.nodes-mini-grid {
+  padding: 8px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 8px;
+}
+
+.node-chip {
+  background: var(--paper-2);
+  border: 2px solid var(--ink);
+  padding: 6px 8px;
+  cursor: pointer;
+  box-shadow: 2px 2px 0px var(--ink);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transition: transform 0.1s ease;
+}
+
+.node-chip:hover {
+  transform: translate(1px, 1px);
+}
+
+.node-chip.selected {
+  outline: 3px solid var(--saffron);
+}
+
+.node-chip-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.node-chip-id {
+  font-family: var(--condensed);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.node-chip-status {
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--ink);
+}
+
+.node-chip-val {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-2);
+}
+
+/* ==========================================================================
+   TELEMETRY INSPECTOR DRAWER (RIGHT SIDEBAR)
+   ========================================================================== */
+.drawer-backdrop {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(26, 17, 8, 0.4);
+  z-index: 2000;
+}
+
+.drawer-panel {
+  position: fixed;
+  top: 0;
+  right: -520px;
+  width: 500px;
+  max-width: 95vw;
+  height: 100vh;
+  background: var(--paper);
+  border-left: var(--border-width) solid var(--ink);
+  box-shadow: -8px 0px 0px var(--ink);
+  z-index: 2001;
+  transition: right 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.drawer-panel.open {
+  right: 0;
+}
+
+.drawer-header {
+  background: var(--paper-3);
+  border-bottom: var(--border-width) solid var(--ink);
+  padding: 16px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.drawer-title-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.drawer-title {
+  font-family: var(--display);
+  font-size: 20px;
+  text-transform: uppercase;
+}
+
+.drawer-subtitle {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.drawer-body {
+  padding: 16px 20px;
+  overflow-y: scroll !important;
+  -webkit-overflow-scrolling: touch;
+  flex: 1 1 auto;
+  max-height: calc(100vh - 145px);
+}
+
+/* Status Stamp */
+.status-stamp {
+  display: inline-block;
+  padding: 6px 14px;
+  border: 3px solid var(--ink);
+  font-family: var(--display);
+  font-size: 16px;
+  text-transform: uppercase;
+  transform: rotate(-2deg);
+  box-shadow: 3px 3px 0px var(--ink);
+  margin-bottom: 16px;
+}
+
+.status-stamp.normal { background: var(--green); color: #fff; }
+.status-stamp.watch { background: var(--gold); color: var(--ink); }
+.status-stamp.warning { background: var(--saffron); color: #fff; }
+.status-stamp.critical { background: var(--blood); color: #fff; }
+
+/* Metrics Gauge Strip */
+.metrics-strip {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.metric-card {
+  background: var(--paper-2);
+  border: 2px solid var(--ink);
+  padding: 10px;
+  box-shadow: 3px 3px 0px var(--ink);
+}
+
+.metric-label {
+  font-family: var(--condensed);
+  font-size: 12px;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-weight: 700;
+}
+
+.metric-val {
+  font-family: var(--mono);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.battery-alert-box {
+  background: #ffecb3;
+  border: 2px solid var(--ink);
+  color: #7f4f00;
+  font-family: var(--condensed);
+  font-size: 13px;
+  font-weight: 700;
+  padding: 6px 10px;
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Chart Canvas Wrappers - Compact Rectangles */
+.chart-box {
+  background: #ffffff;
+  border: 2px solid var(--ink);
+  padding: 8px 10px 10px;
+  margin-bottom: 12px;
+  box-shadow: 3px 3px 0px var(--ink);
+}
+
+.chart-title {
+  font-family: var(--condensed);
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 11px;
+  margin-bottom: 4px;
+  color: var(--ink-2);
+  letter-spacing: 0.5px;
+}
+
+.chart-canvas-container {
+  position: relative;
+  width: 100%;
+  height: 140px; /* Fixed rectangular height prevents stretching */
+}
+
+.chart-canvas-container canvas {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+
+.drawer-footer {
+  background: var(--paper-2);
+  border-top: var(--border-width) solid var(--ink);
+  padding: 14px 20px;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+/* ==========================================================================
+   MODAL WINDOWS (AUTH, ADD USER, NOTIFICATION CHANNELS)
+   ========================================================================== */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(26, 17, 8, 0.6);
+  z-index: 3000;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.modal-overlay.open {
+  display: flex;
+}
+
+.modal-window {
+  background: var(--paper);
+  border: var(--border-width) solid var(--ink);
+  box-shadow: 8px 8px 0px var(--ink);
+  width: 100%;
+  max-width: 520px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.modal-header {
+  background: var(--paper-3);
+  border-bottom: var(--border-width) solid var(--ink);
+  padding: 12px 18px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.modal-header h3 {
+  font-family: var(--condensed);
+  font-size: 18px;
+  text-transform: uppercase;
+}
+
+.modal-body {
+  padding: 20px;
+}
+
+.form-group {
+  margin-bottom: 14px;
+}
+
+.form-group label {
+  display: block;
+  font-family: var(--condensed);
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.form-input, .form-select {
+  width: 100%;
+  padding: 8px 12px;
+  border: 2px solid var(--ink);
+  background: var(--paper-2);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 13px;
+  outline: none;
+  box-shadow: 2px 2px 0px var(--ink);
+}
+
+.form-input:focus, .form-select:focus {
+  background: #ffffff;
+  outline: 2px solid var(--saffron);
+}
+
+.form-help {
+  font-size: 11px;
+  color: var(--ink-3);
+  margin-top: 4px;
+}
+
+.modal-tabs {
+  display: flex;
+  border-bottom: 2px solid var(--ink);
+  margin-bottom: 16px;
+}
+
+.modal-tab {
+  flex: 1;
+  padding: 8px;
+  text-align: center;
+  font-family: var(--condensed);
+  font-weight: 700;
+  text-transform: uppercase;
+  cursor: pointer;
+  background: var(--paper-2);
+  border-right: 2px solid var(--ink);
+}
+
+.modal-tab:last-child {
+  border-right: none;
+}
+
+.modal-tab.active {
+  background: var(--saffron);
+  color: #fff;
+}
+
+/* ==========================================================================
+   ALERTS LOG TABLE
+   ========================================================================== */
+.table-responsive {
+  overflow-x: auto;
+}
+
+.neo-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.neo-table th {
+  background: var(--paper-3);
+  border: 2px solid var(--ink);
+  padding: 8px 10px;
+  text-align: left;
+  font-family: var(--condensed);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.neo-table td {
+  border: 2px solid var(--ink);
+  padding: 8px 10px;
+  background: var(--paper);
+}
+
+.neo-table tr:hover td {
+  background: var(--paper-2);
+}
+
+/* Danger Badges */
+.badge-danger-level {
+  font-family: var(--condensed);
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border: 1.5px solid var(--ink);
+  display: inline-block;
+}
+
+.badge-normal { background: var(--green); color: #fff; }
+.badge-watch { background: var(--gold); color: var(--ink); }
+.badge-warning { background: var(--saffron); color: #fff; }
+.badge-critical { background: var(--blood); color: #fff; }
+
+/* Documentation Callout inside Settings */
+.doc-callout {
+  background: var(--paper-2);
+  border-left: 5px solid var(--saffron);
+  border-top: 1px solid var(--ink-3);
+  border-right: 1px solid var(--ink-3);
+  border-bottom: 1px solid var(--ink-3);
+  padding: 10px 14px;
+  margin: 12px 0;
+  font-size: 12px;
+}
+
+.doc-callout h4 {
+  font-family: var(--condensed);
+  font-size: 14px;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}

@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>COAL MINE SUBSIDENCE MONITOR | DGMS Surface Early Warning System</title>
+  
+  <!-- Google Fonts for Neo-Brutalist / Editorial Zine Aesthetic -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bowlby+One+SC&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&family=Oswald:wght@500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Leaflet Map CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+  
+  <!-- Custom Stylesheet -->
+  <link rel="stylesheet" href="/static/style.css">
+  
+  <!-- Chart.js for real-time telemetry graphs -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+</head>
+<body>
+
+  <!-- Masthead / Industrial Editorial Header -->
+  <header class="masthead">
+    <div class="masthead-inner">
+      <div class="brand-section">
+        <h1 class="brand-title">COAL MINE SUBSIDENCE MONITOR</h1>
+        <div class="brand-subtitle">Surface Tophead Telemetry & DGMS Subsidence Hazard Decision Layer</div>
+      </div>
+      
+      <div class="masthead-actions">
+        <div id="userBadge" class="user-badge">
+          <span>OPERATOR:</span>
+          <strong id="currentUsername">Connecting...</strong>
+          <span id="currentUserRole" class="role-tag">ROLE</span>
+        </div>
+
+        <button id="btnOpenAuth" class="neo-btn btn-small" style="display:none;" onclick="openAuthModal()">Sign In / Sign Up</button>
+        <button id="btnAddUser" class="neo-btn btn-small" onclick="openAddUserModal()">+ Add User</button>
+        <button id="btnNotifConfig" class="neo-btn btn-small" onclick="openNotifModal()">🔔 Alert Channels</button>
+        <button id="btnAudioToggle" class="neo-btn btn-small" onclick="toggleAudioChime()">🔊 Sound: ON</button>
+        <button id="btnLogout" class="neo-btn btn-small btn-danger" onclick="handleLogout()">Logout</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Demo Control Bar -->
+  <div class="demo-bar">
+    <div class="demo-bar-inner">
+      <div class="demo-controls-group">
+        <span class="demo-tag">DEMO / FIELD CONTROLS</span>
+        <button class="neo-btn btn-small btn-gold" onclick="triggerSeedData()">🌱 Seed Demo Mine (Jharia & Raniganj)</button>
+        <button id="btnLiveToggle" class="neo-btn btn-small btn-success" onclick="toggleLiveSimulator()">▶️ Live 5s Feed: OFF</button>
+        <button class="neo-btn btn-small btn-danger" onclick="openHazardModal()">⚡ Test Subsidence Hazard</button>
+      </div>
+      <div class="demo-controls-group">
+        <a id="btnDownloadAllExcel" href="/api/export.xlsx" class="neo-btn btn-small btn-primary" style="text-decoration:none;">
+          📥 Download Full Excel Log (.xlsx)
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Real-Time Critical / Warning Alert Banner -->
+  <div id="criticalAlertBanner">
+    <div class="alert-banner-inner">
+      <div id="alertBannerText">⚠️ HAZARD DETECTED: Node in Warning/Critical state!</div>
+      <button class="neo-btn btn-small" style="background:#ffffff; color:#000;" onclick="dismissAlertBanner()">Acknowledge</button>
+    </div>
+  </div>
+
+  <!-- Interactive Map Placement Mode Banner -->
+  <div id="placementModeBanner">
+    <div class="placement-banner-inner">
+      <span id="placementBannerText">🎯 PLACEMENT MODE ACTIVE: Click anywhere on the India Map to place this node.</span>
+      <button class="neo-btn btn-small" style="background:#000; color:#fff;" onclick="cancelPlacementMode()">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Main Container -->
+  <div class="container">
+    <div class="dashboard-grid">
+      
+      <!-- Left Column: Map & Alerts Log -->
+      <main class="main-column">
+        
+        <!-- India Map View Box -->
+        <div class="map-container-box">
+          <div class="map-toolbar">
+            <div class="map-presets">
+              <span class="map-preset-label">COALFIELD JUMP:</span>
+              <button class="neo-btn btn-small" onclick="panMapTo(23.7438, 86.4116, 14)">Jharia (Dhanbad)</button>
+              <button class="neo-btn btn-small" onclick="panMapTo(23.6212, 87.0854, 14)">Raniganj (Asansol)</button>
+              <button class="neo-btn btn-small" onclick="panMapTo(22.3595, 82.7501, 13)">Korba</button>
+              <button class="neo-btn btn-small" onclick="panMapTo(24.2000, 82.6667, 12)">Singrauli</button>
+              <button class="neo-btn btn-small" onclick="resetIndiaMap()">All India</button>
+            </div>
+            <div>
+              <span id="placedCountLabel" style="font-family:var(--mono); font-size:12px; font-weight:700;">Placed Nodes: 0</span>
+            </div>
+          </div>
+          
+          <div id="map"></div>
+          
+          <!-- Map Legend -->
+          <div class="map-legend">
+            <span style="text-transform:uppercase;">ML Hazard Class:</span>
+            <div class="legend-items">
+              <div class="legend-item"><span class="legend-swatch swatch-normal"></span> Normal (&lt;0.5° / &lt;0.05g)</div>
+              <div class="legend-item"><span class="legend-swatch swatch-watch"></span> Watch (0.5-1° / 0.05-0.15g)</div>
+              <div class="legend-item"><span class="legend-swatch swatch-warning"></span> Warning (1-2° / 0.15-0.3g)</div>
+              <div class="legend-item"><span class="legend-swatch swatch-critical"></span> Critical (&gt;2° / &gt;0.3g)</div>
+              <div class="legend-item">🪫 Low Battery (&le;20%)</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Alerts Log Box -->
+        <div class="zine-box">
+          <div class="zine-header">
+            <h2>🚨 SUBSIDENCE HAZARD EVENT LOG</h2>
+            <button class="neo-btn btn-small" onclick="fetchAlerts()">Refresh Alerts</button>
+          </div>
+          <div class="zine-content table-responsive">
+            <table class="neo-table">
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>Node</th>
+                  <th>Gateway MAC</th>
+                  <th>Level</th>
+                  <th>Triggering Telemetry</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="alertsTableBody">
+                <tr><td colspan="6" style="text-align:center; color:var(--ink-3);">No active hazard alerts recorded.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </main>
+
+      <!-- Right Column: Unplaced Nodes & Gateway Inventory -->
+      <aside class="sidebar-column">
+        
+        <!-- Unplaced Nodes Box -->
+        <div class="zine-box">
+          <div class="zine-header">
+            <h3>📍 UNPLACED NODES</h3>
+            <span id="unplacedBadge" class="badge-danger-level badge-watch">0</span>
+          </div>
+          <div class="zine-content">
+            <p style="font-size:12px; color:var(--ink-3); margin-bottom:12px;">
+              Nodes transmitting data that have not yet been placed on the mine surface map:
+            </p>
+            <div id="unplacedList" class="unplaced-list">
+              <div style="font-family:var(--mono); font-size:12px; color:var(--ink-3);">Scanning active gateways...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Gateways & Placed Nodes Tree -->
+        <div class="zine-box">
+          <div class="zine-header">
+            <h3>📡 GATEWAYS & SENSORS</h3>
+            <button class="neo-btn btn-small" onclick="fetchDashboardData()">Refresh</button>
+          </div>
+          <div class="zine-content" id="gatewaysTree">
+            <div style="font-family:var(--mono); font-size:12px; color:var(--ink-3);">Loading gateway branches...</div>
+          </div>
+        </div>
+
+      </aside>
+
+    </div>
+  </div>
+
+  <!-- Telemetry Inspector Drawer (Right Sidebar) -->
+  <div id="drawerBackdrop" class="drawer-backdrop" onclick="closeInspectorDrawer()"></div>
+  <aside id="inspectorDrawer" class="drawer-panel">
+    <div class="drawer-header">
+      <div class="drawer-title-group">
+        <h2 id="drawerNodeTitle" class="drawer-title">NODE #1</h2>
+        <div id="drawerGatewayMac" class="drawer-subtitle">GW: A4:C1:38:90:12:01</div>
+      </div>
+      <button class="neo-btn btn-small" onclick="closeInspectorDrawer()">✖ Close</button>
+    </div>
+
+    <div class="drawer-body">
+      
+      <!-- Status Badge & Low Battery Alert -->
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div id="drawerStatusStamp" class="status-stamp normal">STATUS: NORMAL</div>
+        <div id="drawerBatteryBadge" style="font-family:var(--mono); font-weight:700; font-size:13px;">🔋 4.12 V · 92%</div>
+      </div>
+
+      <div id="drawerLowBattAlert" class="battery-alert-box" style="display:none;">
+        ⚠️ LOW BATTERY WARNING: Battery &le; 20%. Field replacement or solar recharge needed!
+      </div>
+
+      <!-- Quick Metrics Strip -->
+      <div class="metrics-strip">
+        <div class="metric-card">
+          <div class="metric-label">Pitch Deviation (Tilt X)</div>
+          <div id="drawerTiltX" class="metric-val">+0.12°</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Roll Deviation (Tilt Y)</div>
+          <div id="drawerTiltY" class="metric-val">-0.08°</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Vibration RMS</div>
+          <div id="drawerVibRMS" class="metric-val">0.018 g</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">SW160 Shock Sensor</div>
+          <div id="drawerShockSensor" class="metric-val">Normal</div>
+        </div>
+      </div>
+
+      <!-- Real-Time Telemetry Graph 1: Tilt Deviation (X & Y) -->
+      <div class="chart-box">
+        <div class="chart-title">📈 TILT DEVIATION (PITCH X &amp; ROLL Y)</div>
+        <div class="chart-canvas-container">
+          <canvas id="chartTiltCanvas"></canvas>
+        </div>
+      </div>
+
+      <!-- Real-Time Telemetry Graph 2: Vibration Magnitude -->
+      <div class="chart-box">
+        <div class="chart-title">📊 VIBRATION MAGNITUDE (RMS)</div>
+        <div class="chart-canvas-container">
+          <canvas id="chartVibCanvas"></canvas>
+        </div>
+      </div>
+
+      <!-- Metadata & Reasons -->
+      <div class="metric-card" style="margin-bottom:14px;">
+        <div class="metric-label">ML Hazard Assessment Details</div>
+        <div id="drawerReasons" style="font-family:var(--mono); font-size:11px; margin-top:4px;">Normal baseline</div>
+        <div style="margin-top:6px; font-family:var(--mono); font-size:10px; color:var(--ink-3);">
+          Packet Counter: <span id="drawerCounter">0</span> | Last Seen: <span id="drawerAge">0s ago</span>
+        </div>
+      </div>
+
+      <!-- Node Location Editor -->
+      <div class="metric-card">
+        <div class="metric-label">Surface Placement Info</div>
+        <div id="drawerLocationCoords" style="font-family:var(--mono); font-size:12px; margin:4px 0;">Lat: 23.7465, Lng: 86.4140</div>
+        <button id="btnReposition" class="neo-btn btn-small" onclick="repositionCurrentNode()">📍 Move on Map</button>
+        <button class="neo-btn btn-small btn-danger" onclick="unplaceCurrentNode()">Remove from Map</button>
+      </div>
+
+    </div>
+
+    <div class="drawer-footer">
+      <a id="btnDownloadNodeExcel" href="#" class="neo-btn btn-primary" style="text-decoration:none; width:100%; text-align:center;">
+        📥 Download Node Excel Sheet (.xlsx)
+      </a>
+    </div>
+  </aside>
+
+  <!-- Modal: Authentication (Sign In / Sign Up) -->
+  <div id="authModal" class="modal-overlay">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h3 id="authModalTitle">MINE OPERATOR ACCESS</h3>
+        <button class="neo-btn btn-small" onclick="closeAuthModal()">✖</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-tabs">
+          <div id="tabLogin" class="modal-tab active" onclick="switchAuthTab('login')">SIGN IN</div>
+          <div id="tabSignup" class="modal-tab" onclick="switchAuthTab('signup')">CREATE ACCOUNT</div>
+        </div>
+
+        <form id="authForm" onsubmit="handleAuthSubmit(event)">
+          <div class="form-group">
+            <label for="authUsername">Username</label>
+            <input type="text" id="authUsername" class="form-input" required placeholder="e.g. jharia_safety_eng">
+          </div>
+          <div id="authEmailGroup" class="form-group" style="display:none;">
+            <label for="authEmail">Work Email</label>
+            <input type="email" id="authEmail" class="form-input" placeholder="safety@coalmine.gov.in">
+          </div>
+          <div class="form-group">
+            <label for="authPassword">Password</label>
+            <input type="password" id="authPassword" class="form-input" required placeholder="Minimum 6 characters">
+          </div>
+          <div id="authRoleGroup" class="form-group" style="display:none;">
+            <label for="authRole">Assigned Role</label>
+            <select id="authRole" class="form-select">
+              <option value="operator">Mine Safety Operator</option>
+              <option value="admin">Chief Mining Engineer (Admin)</option>
+            </select>
+          </div>
+          <button type="submit" class="neo-btn btn-submit btn-primary" style="width:100%; margin-top:8px;">
+            Authenticate
+          </button>
+        </form>
+        <div style="margin-top:14px; font-family:var(--mono); font-size:11px; color:var(--ink-3);">
+          Default accounts available: <strong>admin</strong> / <code>admin123</code> &amp; <strong>mine_operator</strong> / <code>operator123</code>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Add New User -->
+  <div id="addUserModal" class="modal-overlay">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h3>ADD NEW OPERATOR / ENGINEER</h3>
+        <button class="neo-btn btn-small" onclick="closeAddUserModal()">✖</button>
+      </div>
+      <div class="modal-body">
+        <form onsubmit="handleCreateUserSubmit(event)">
+          <div class="form-group">
+            <label for="newUsername">Username</label>
+            <input type="text" id="newUsername" class="form-input" required placeholder="e.g. dhanbad_shift_officer">
+          </div>
+          <div class="form-group">
+            <label for="newEmail">Email</label>
+            <input type="email" id="newEmail" class="form-input" placeholder="officer@coalfield.in">
+          </div>
+          <div class="form-group">
+            <label for="newPassword">Initial Password</label>
+            <input type="password" id="newPassword" class="form-input" required minlength="6">
+          </div>
+          <div class="form-group">
+            <label for="newRole">Role</label>
+            <select id="newRole" class="form-select">
+              <option value="operator">Safety Operator (Scoped Access)</option>
+              <option value="admin">Admin / Inspector (Full Access)</option>
+            </select>
+          </div>
+          <button type="submit" class="neo-btn btn-submit btn-primary" style="width:100%;">
+            Create Account
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Notification Channels & Alert Integrations -->
+  <div id="notifModal" class="modal-overlay">
+    <div class="modal-window" style="max-width:600px;">
+      <div class="modal-header">
+        <h3>🔔 ALERT NOTIFICATION INTEGRATIONS</h3>
+        <button class="neo-btn btn-small" onclick="closeNotifModal()">✖</button>
+      </div>
+      <div class="modal-body">
+        
+        <div class="doc-callout">
+          <h4>Deduplicated Notification Architecture</h4>
+          <p>
+            Alerts automatically trigger whenever a node enters <strong>Watch, Warning, or Critical</strong> status.
+            To prevent spamming every 5 seconds, identical repeat readings are suppressed for a configurable reminder period.
+          </p>
+        </div>
+
+        <form onsubmit="handleSaveNotifConfig(event)">
+          
+          <div class="form-group">
+            <label for="cfgRepeatInterval">Deduplication Repeat Reminder (seconds)</label>
+            <input type="number" id="cfgRepeatInterval" class="form-input" value="900" min="60" max="86400">
+            <div class="form-help">Default 900s (15 minutes). Prevents continuous 5-second spam.</div>
+          </div>
+
+          <!-- Webhook -->
+          <div class="zine-box" style="margin-bottom:12px; padding:10px; background:var(--paper);">
+            <div style="font-family:var(--condensed); font-weight:700;">1. AUTOMATION WEBHOOK (Slack / Discord / Zapier)</div>
+            <div class="form-group" style="margin-top:6px;">
+              <input type="url" id="cfgWebhookUrl" class="form-input" placeholder="https://webhook.site/... or Discord/Slack URL">
+            </div>
+            <button type="button" class="neo-btn btn-small" onclick="testNotificationChannel('webhook')">Test Webhook</button>
+          </div>
+
+          <!-- Telegram -->
+          <div class="zine-box" style="margin-bottom:12px; padding:10px; background:var(--paper);">
+            <div style="font-family:var(--condensed); font-weight:700;">2. TELEGRAM BOT ALERTS</div>
+            <div class="form-help">Create a bot with @BotFather and retrieve Bot Token &amp; Chat ID.</div>
+            <div class="form-group" style="margin-top:6px;">
+              <label>Bot Token</label>
+              <input type="text" id="cfgTelegramToken" class="form-input" placeholder="e.g. 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11">
+            </div>
+            <div class="form-group">
+              <label>Chat ID / Group Channel ID</label>
+              <input type="text" id="cfgTelegramChatId" class="form-input" placeholder="e.g. -100123456789 or 987654321">
+            </div>
+            <button type="button" class="neo-btn btn-small" onclick="testNotificationChannel('telegram')">Test Telegram</button>
+          </div>
+
+          <!-- Twilio WhatsApp & SMS -->
+          <div class="zine-box" style="margin-bottom:12px; padding:10px; background:var(--paper);">
+            <div style="font-family:var(--condensed); font-weight:700;">3. TWILIO WHATSAPP &amp; SMS DISPATCH</div>
+            <div class="form-help">Direct cellular dispatch to field safety engineers.</div>
+            <div class="form-group" style="margin-top:6px;">
+              <label>Account SID</label>
+              <input type="text" id="cfgTwilioSid" class="form-input" placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxx">
+            </div>
+            <div class="form-group">
+              <label>Auth Token</label>
+              <input type="password" id="cfgTwilioToken" class="form-input" placeholder="Twilio Auth Token">
+            </div>
+            <div class="form-group">
+              <label>From Number</label>
+              <input type="text" id="cfgTwilioFrom" class="form-input" placeholder="+14155238886 (or Twilio Phone)">
+            </div>
+            <div class="form-group">
+              <label>To Phone Number</label>
+              <input type="text" id="cfgTwilioTo" class="form-input" placeholder="+919876543210">
+            </div>
+            <div class="form-group">
+              <label>
+                <input type="checkbox" id="cfgTwilioIsWhatsApp"> Send as WhatsApp message (uses whatsapp:+ prefix)
+              </label>
+            </div>
+            <button type="button" class="neo-btn btn-small" onclick="testNotificationChannel('twilio')">Test Twilio</button>
+          </div>
+
+          <button type="submit" class="neo-btn btn-submit btn-primary" style="width:100%;">
+            Save Notification Settings
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Test Subsidence Hazard Spike -->
+  <div id="hazardModal" class="modal-overlay">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h3>SIMULATE SUBSIDENCE HAZARD</h3>
+        <button class="neo-btn btn-small" onclick="closeHazardModal()">✖</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:12px; color:var(--ink-3); margin-bottom:12px;">
+          Inject a temporary subsidence tilt and vibration spike on a selected node to observe immediate ML classification, map marker color changes, audio warning, and in-app alerts:
+        </p>
+        <form onsubmit="handleTriggerHazardSubmit(event)">
+          <div class="form-group">
+            <label for="hazardNodeSelect">Target Node</label>
+            <select id="hazardNodeSelect" class="form-select"></select>
+          </div>
+          <div class="form-group">
+            <label for="hazardLevelSelect">Hazard Level to Simulate</label>
+            <select id="hazardLevelSelect" class="form-select">
+              <option value="critical">CRITICAL (Tilt: 2.75°, Vib RMS: 0.42g, Shock: Triggered)</option>
+              <option value="warning">WARNING (Tilt: 1.65°, Vib RMS: 0.22g, Shock: Triggered)</option>
+              <option value="watch">WATCH (Tilt: 0.85°, Vib RMS: 0.09g)</option>
+              <option value="normal">NORMAL (Reset to Baseline: Tilt 0.10°, Vib 0.02g)</option>
+            </select>
+          </div>
+          <button type="submit" class="neo-btn btn-submit btn-danger" style="width:100%;">
+            Trigger Subsidence Spike Now
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Application Logic -->
+  <script src="/static/app.js"></script>
+</body>
+</html>
