@@ -8,6 +8,9 @@ from app.models.gateway import Gateway
 from app.models.mine import Mine
 from app.models.node import Node
 from app.models.tunnel import Tunnel
+from app.models.user import User
+from app.security.passwords import hash_password
+from app.security.tokens import COOKIE_NAME, create_session_token
 from app.services.packet_codec import pack_gateway_packet
 
 
@@ -15,6 +18,18 @@ def setup_dashboard_data(db, client):
     """Sets up company, mine, tunnel, gateway, and ingests telemetry for test nodes."""
     comp = Company(name="Eastern Coalfields Limited", name_normalized="eastern coalfields limited")
     db.add(comp)
+    db.flush()
+
+    user = User(
+        company_id=comp.id,
+        username="dash_mgr",
+        password_hash=hash_password("ValidPassword123!"),
+        full_name="Dashboard Manager",
+        role="manager",
+        active=True,
+        force_pw_change=False,
+    )
+    db.add(user)
     db.flush()
 
     mine = Mine(company_id=comp.id, name="Raniganj Incline", status="active", method="underground")
@@ -29,6 +44,9 @@ def setup_dashboard_data(db, client):
     gw = Gateway(mac=gw_mac, mine_id=mine.id, name="Raniganj East Gateway", active=True)
     db.add(gw)
     db.commit()
+
+    token = create_session_token(user.id)
+    client.cookies.set(COOKIE_NAME, token)
 
     # Ingest telemetry for Node 1
     pkt = pack_gateway_packet(

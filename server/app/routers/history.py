@@ -1,16 +1,22 @@
 """HTTP router for time-series telemetry reading history.
 
-Owns the GET /api/history endpoint with eager relationship loading.
+Owns the GET /api/history endpoint with eager relationship loading, superior authorization, and mine scoping.
 Must NOT handle data ingestion, update node positions, or send alerts.
 """
 from typing import Optional
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
 from app.models.gateway import Gateway
 from app.models.node import Node
 from app.models.reading import Reading
+from app.models.user import User
+from app.security.dependencies import (
+    get_allowed_mine_ids,
+    require_role,
+)
+from app.security.roles import SUPERIOR_ROLES
 from app.services.hazard_classifier import (
     LEVEL_COLORS,
     LEVEL_INT_TO_STR,
@@ -28,20 +34,39 @@ def api_history(
     node_id: Optional[int] = None,
     limit: int = Query(60, ge=1, le=5000),
     only_alerts: bool = False,
+    user: User = Depends(require_role(*SUPERIOR_ROLES)),
     db: Session = Depends(get_db),
 ):
-    """Returns telemetry points ordered by time for Chart.js inspector."""
+    """Returns telemetry points ordered by time for Chart.js inspector (superiors only, mine scoped)."""
+    allowed_mines = get_allowed_mine_ids(db, user)
+
     q = (
         db.query(Reading)
         .options(joinedload(Reading.node).joinedload(Node.gateway))
         .join(Node)
         .join(Gateway)
+        .filter(Gateway.mine_id.in_(allowed_mines))
     )
 
     if gateway:
-        q = q.filter(Gateway.mac == norm_mac(gateway))
+        clean_mac = norm_mac(gateway)
+        gw_record = db.query(Gateway).filter(Gateway.mac == clean_mac).first()
+        if not gw_record or gw_record.mine_id not in allowed_mines:
+            raise HTTPException(status_code=404, detail="Gateway not found")
+        q = q.filter(Gateway.mac == clean_mac)
+
     if node_id is not None:
+        if gateway:
+            node_exists = (
+                db.query(Node)
+                .join(Gateway)
+                .filter(Gateway.mac == norm_mac(gateway), Node.node_no == node_id, Gateway.mine_id.in_(allowed_mines))
+                .first()
+            )
+            if not node_exists:
+                raise HTTPException(status_code=404, detail="Node not found")
         q = q.filter(Node.node_no == node_id)
+
     if only_alerts:
         q = q.filter(Reading.level > 0)
 

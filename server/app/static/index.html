@@ -266,7 +266,7 @@
     </div>
   </aside>
 
-  <!-- Modal: Authentication (Sign In / Sign Up) -->
+  <!-- Modal: Authentication (Sign In Only) -->
   <div id="authModal" class="modal-overlay">
     <div class="modal-window">
       <div class="modal-header">
@@ -275,71 +275,89 @@
       </div>
       <div class="modal-body">
         <div class="modal-tabs">
-          <div id="tabLogin" class="modal-tab active" onclick="switchAuthTab('login')">SIGN IN</div>
-          <div id="tabSignup" class="modal-tab" onclick="switchAuthTab('signup')">CREATE ACCOUNT</div>
+          <div id="tabLogin" class="modal-tab active">SIGN IN</div>
         </div>
 
         <form id="authForm" onsubmit="handleAuthSubmit(event)">
           <div class="form-group">
             <label for="authUsername">Username</label>
-            <input type="text" id="authUsername" class="form-input" required placeholder="e.g. jharia_safety_eng">
-          </div>
-          <div id="authEmailGroup" class="form-group" style="display:none;">
-            <label for="authEmail">Work Email</label>
-            <input type="email" id="authEmail" class="form-input" placeholder="safety@coalmine.gov.in">
+            <input type="text" id="authUsername" class="form-input" required placeholder="Enter username">
           </div>
           <div class="form-group">
             <label for="authPassword">Password</label>
-            <input type="password" id="authPassword" class="form-input" required placeholder="Minimum 6 characters">
-          </div>
-          <div id="authRoleGroup" class="form-group" style="display:none;">
-            <label for="authRole">Assigned Role</label>
-            <select id="authRole" class="form-select">
-              <option value="operator">Mine Safety Operator</option>
-              <option value="admin">Chief Mining Engineer (Admin)</option>
-            </select>
+            <input type="password" id="authPassword" class="form-input" required placeholder="Enter password">
           </div>
           <button type="submit" class="neo-btn btn-submit btn-primary" style="width:100%; margin-top:8px;">
             Authenticate
           </button>
         </form>
-        <div style="margin-top:14px; font-family:var(--mono); font-size:11px; color:var(--ink-3);">
-          Default accounts available: <strong>admin</strong> / <code>admin123</code> &amp; <strong>mine_operator</strong> / <code>operator123</code>
-        </div>
       </div>
     </div>
   </div>
 
-  <!-- Modal: Add New User -->
+  <!-- Modal: Force Password Change -->
+  <div id="changePasswordModal" class="modal-overlay">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h3>PASSWORD CHANGE REQUIRED</h3>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:12px; color:var(--ink-3); margin-bottom:12px;">
+          Your account requires a password change before you can access the system. The new password must be at least 10 characters long, and must differ from your current password and username.
+        </p>
+        <form onsubmit="handleChangePasswordSubmit(event)">
+          <div class="form-group">
+            <label for="cpCurrentPassword">Current Temporary Password</label>
+            <input type="password" id="cpCurrentPassword" class="form-input" required>
+          </div>
+          <div class="form-group">
+            <label for="cpNewPassword">New Password (min 10 characters)</label>
+            <input type="password" id="cpNewPassword" class="form-input" required minlength="10">
+          </div>
+          <div class="form-group">
+            <label for="cpConfirmPassword">Confirm New Password</label>
+            <input type="password" id="cpConfirmPassword" class="form-input" required minlength="10">
+          </div>
+          <button type="submit" class="neo-btn btn-submit btn-primary" style="width:100%; margin-top:8px;">
+            Update Password &amp; Proceed
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Add New User (Manager Only) -->
   <div id="addUserModal" class="modal-overlay">
     <div class="modal-window">
       <div class="modal-header">
-        <h3>ADD NEW OPERATOR / ENGINEER</h3>
+        <h3>ADD NEW COMPANY USER</h3>
         <button class="neo-btn btn-small" onclick="closeAddUserModal()">✖</button>
       </div>
       <div class="modal-body">
         <form onsubmit="handleCreateUserSubmit(event)">
           <div class="form-group">
             <label for="newUsername">Username</label>
-            <input type="text" id="newUsername" class="form-input" required placeholder="e.g. dhanbad_shift_officer">
+            <input type="text" id="newUsername" class="form-input" required placeholder="e.g. jharia_safety_officer">
           </div>
           <div class="form-group">
-            <label for="newEmail">Email</label>
-            <input type="email" id="newEmail" class="form-input" placeholder="officer@coalfield.in">
-          </div>
-          <div class="form-group">
-            <label for="newPassword">Initial Password</label>
-            <input type="password" id="newPassword" class="form-input" required minlength="6">
+            <label for="newFullName">Full Name</label>
+            <input type="text" id="newFullName" class="form-input" required placeholder="e.g. Rajesh Kumar">
           </div>
           <div class="form-group">
             <label for="newRole">Role</label>
             <select id="newRole" class="form-select">
-              <option value="operator">Safety Operator (Scoped Access)</option>
-              <option value="admin">Admin / Inspector (Full Access)</option>
+              <option value="safety_officer">Safety Officer (Superior)</option>
+              <option value="engineer">Mining Engineer (Superior)</option>
+              <option value="foreman">Shift Foreman (Worker)</option>
+              <option value="miner">Miner / Underground Worker (Worker)</option>
             </select>
           </div>
+          <div class="form-group">
+            <label for="newPassword">Initial Password</label>
+            <input type="password" id="newPassword" class="form-input" required minlength="10" placeholder="Minimum 10 characters">
+          </div>
           <button type="submit" class="neo-btn btn-submit btn-primary" style="width:100%;">
-            Create Account
+            Create User Account
           </button>
         </form>
       </div>

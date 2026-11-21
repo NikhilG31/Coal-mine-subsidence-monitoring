@@ -4,11 +4,12 @@ Owns application lifecycle, router registration, CORS configuration, and static 
 Must NOT define route implementations, database schemas, or CLI handlers directly.
 """
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.config import CORS_ORIGINS
 from app.routers import (
     alerts,
     auth,
@@ -22,19 +23,35 @@ from app.routers import (
     notifications,
     placements,
 )
+from app.security.dependencies import PasswordChangeRequiredException
 
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = FastAPI(title="Coal Mine Subsidence Monitoring System")
 
-# CORS Configuration
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Spec B8: Remove allow_origins=["*"] with allow_credentials=True.
+# Default is same-origin only. Use explicit origins from CORS_ORIGINS when provided.
+if CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+
+# Exception handler for forced password change gate
+@app.exception_handler(PasswordChangeRequiredException)
+async def password_change_required_handler(request: Request, exc: PasswordChangeRequiredException):
+    return JSONResponse(
+        status_code=403,
+        content={
+            "code": "password_change_required",
+            "detail": "Password change required before accessing this resource.",
+        },
+    )
+
 
 # Register Area Routers
 app.include_router(ingest.router)

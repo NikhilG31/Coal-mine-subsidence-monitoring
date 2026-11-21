@@ -1,7 +1,7 @@
 """HTTP router for node geospatial placement and unplaced queue management.
 
 Owns GET/POST /api/placements, DELETE /api/placements/{gateway}/{node_id}, and GET /api/unplaced.
-Must NOT decode raw telemetry packets or issue user authentication tokens.
+Enforces superior authorization and tenant mine scoping.
 """
 import datetime
 import time
@@ -15,6 +15,13 @@ from app.models.gateway import Gateway
 from app.models.node import Node
 from app.models.reading import Reading
 from app.models.tunnel import Tunnel
+from app.models.user import User
+from app.security.dependencies import (
+    get_allowed_mine_ids,
+    get_current_user,
+    require_role,
+)
+from app.security.roles import SUPERIOR_ROLES
 from app.services.node_serializer import serialize_node
 from app.services.packet_codec import norm_mac
 
@@ -22,11 +29,21 @@ router = APIRouter(tags=["placements"])
 
 
 @router.get("/api/placements")
-def api_placements(db: Session = Depends(get_db)):
-    """Returns placed nodes and their coordinates."""
+def api_placements(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Returns placed nodes and their coordinates scoped to permitted mines (any role)."""
+    allowed_mines = get_allowed_mine_ids(db, user)
+
     placed = (
         db.query(Node)
-        .filter(Node.lat.isnot(None), Node.lon.isnot(None))
+        .join(Gateway, Gateway.id == Node.gateway_id)
+        .filter(
+            Gateway.mine_id.in_(allowed_mines),
+            Node.lat.isnot(None),
+            Node.lon.isnot(None),
+        )
         .all()
     )
     res = []
@@ -48,8 +65,14 @@ def api_placements(db: Session = Depends(get_db)):
 
 
 @router.post("/api/placements")
-async def api_save_placement(request: Request, db: Session = Depends(get_db)):
-    """Saves geographic coordinates for a node."""
+async def api_save_placement(
+    request: Request,
+    user: User = Depends(require_role(*SUPERIOR_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """Saves geographic coordinates for a node (superiors only, mine scoped)."""
+    allowed_mines = get_allowed_mine_ids(db, user)
+
     data = await request.json()
     mac = norm_mac(data.get("gateway_mac_address"))
     node_no = int(data.get("node_id", 0))
@@ -60,7 +83,7 @@ async def api_save_placement(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Invalid latitude/longitude coordinates")
 
     gateway = db.query(Gateway).filter(Gateway.mac == mac).first()
-    if not gateway:
+    if not gateway or gateway.mine_id not in allowed_mines:
         raise HTTPException(status_code=404, detail="Gateway not found")
 
     node = (
@@ -75,6 +98,7 @@ async def api_save_placement(request: Request, db: Session = Depends(get_db)):
     node.lat = lat
     node.lon = lng
     node.placed_at = datetime.datetime.now(datetime.timezone.utc)
+    node.placed_by = user.id
 
     # Link to mine's first tunnel if tunnel not assigned
     if node.tunnel_id is None:
@@ -87,28 +111,48 @@ async def api_save_placement(request: Request, db: Session = Depends(get_db)):
 
 
 @router.delete("/api/placements/{gateway}/{node_id}")
-def api_delete_placement(gateway: str, node_id: int, db: Session = Depends(get_db)):
-    """Unplaces a node from the map."""
+def api_delete_placement(
+    gateway: str,
+    node_id: int,
+    user: User = Depends(require_role(*SUPERIOR_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """Unplaces a node from the map (superiors only, mine scoped)."""
+    allowed_mines = get_allowed_mine_ids(db, user)
     mac = norm_mac(gateway)
+
     gw = db.query(Gateway).filter(Gateway.mac == mac).first()
-    if gw:
-        node = db.query(Node).filter(Node.gateway_id == gw.id, Node.node_no == node_id).first()
-        if node:
-            node.lat = None
-            node.lon = None
-            node.tunnel_id = None
-            node.placed_at = None
-            db.commit()
+    if not gw or gw.mine_id not in allowed_mines:
+        raise HTTPException(status_code=404, detail="Gateway not found")
+
+    node = db.query(Node).filter(Node.gateway_id == gw.id, Node.node_no == node_id).first()
+    if not node:
+        raise HTTPException(status_code=404, detail="Node not found")
+
+    node.lat = None
+    node.lon = None
+    node.tunnel_id = None
+    node.placed_at = None
+    db.commit()
     return {"message": "Node unplaced from map"}
 
 
 @router.get("/api/unplaced")
-def api_unplaced(db: Session = Depends(get_db)):
-    """Returns nodes reporting data that have not yet been placed on the surface map."""
+def api_unplaced(
+    user: User = Depends(require_role(*SUPERIOR_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """Returns unplaced nodes reporting data in permitted mines (superiors only)."""
     now_ts = time.time()
+    allowed_mines = get_allowed_mine_ids(db, user)
+
     unplaced_nodes = (
         db.query(Node)
-        .filter((Node.lat.is_(None)) | (Node.lon.is_(None)) | (Node.tunnel_id.is_(None)))
+        .join(Gateway, Gateway.id == Node.gateway_id)
+        .filter(
+            Gateway.mine_id.in_(allowed_mines),
+            (Node.lat.is_(None)) | (Node.lon.is_(None)) | (Node.tunnel_id.is_(None)),
+        )
         .all()
     )
     node_ids = [n.id for n in unplaced_nodes]

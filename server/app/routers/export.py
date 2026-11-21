@@ -1,18 +1,24 @@
 """HTTP router for Excel telemetry log export.
 
-Owns GET /api/export.xlsx and formatting telemetry into styled multi-sheet workbooks.
+Owns GET /api/export.xlsx with superior role enforcement and tenant mine scoping.
 Must NOT modify database records or bypass relationship query optimization.
 """
 import datetime
 import io
 from typing import Optional
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
 from app.models.gateway import Gateway
 from app.models.node import Node
 from app.models.reading import Reading
+from app.models.user import User
+from app.security.dependencies import (
+    get_allowed_mine_ids,
+    require_role,
+)
+from app.security.roles import SUPERIOR_ROLES
 from app.services.hazard_classifier import (
     LEVEL_INT_TO_STR,
     get_hazard_details,
@@ -45,20 +51,29 @@ XLSX_WIDTHS = [22, 14, 25, 20, 10, 14, 12, 12, 18, 22, 14, 14, 15, 18, 48]
 def export_xlsx(
     gateway: Optional[str] = None,
     node_id: Optional[int] = None,
+    user: User = Depends(require_role(*SUPERIOR_ROLES)),
     db: Session = Depends(get_db),
 ):
-    """Excel workbook export with eager relationship loading and styling."""
+    """Excel workbook export with eager relationship loading (superiors only, mine scoped)."""
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
+
+    allowed_mines = get_allowed_mine_ids(db, user)
 
     q = (
         db.query(Reading)
         .options(joinedload(Reading.node).joinedload(Node.gateway))
         .join(Node)
         .join(Gateway)
+        .filter(Gateway.mine_id.in_(allowed_mines))
     )
     if gateway:
-        q = q.filter(Gateway.mac == norm_mac(gateway))
+        clean_mac = norm_mac(gateway)
+        gw_record = db.query(Gateway).filter(Gateway.mac == clean_mac).first()
+        if not gw_record or gw_record.mine_id not in allowed_mines:
+            raise HTTPException(status_code=404, detail="Gateway not found")
+        q = q.filter(Gateway.mac == clean_mac)
+
     if node_id is not None:
         q = q.filter(Node.node_no == node_id)
 

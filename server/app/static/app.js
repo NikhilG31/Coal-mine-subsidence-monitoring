@@ -28,7 +28,6 @@ let audioCtx = null;
 let lastKnownWorstStatus = "normal";
 
 // Auth State
-let authToken = localStorage.getItem("subsidence_auth_token") || "";
 let currentUser = null;
 
 // ==========================================
@@ -723,18 +722,25 @@ function startPolling() {
 
 async function apiFetch(url, options = {}) {
   const headers = options.headers || {};
-  if (authToken) {
-    headers["Authorization"] = `Bearer ${authToken}`;
-  }
   if (!headers["Content-Type"] && options.body && typeof options.body === "string") {
     headers["Content-Type"] = "application/json";
   }
 
-  const res = await fetch(url, { ...options, headers });
+  const res = await fetch(url, { ...options, headers, credentials: "same-origin" });
   if (res.status === 401) {
-    // Show auth modal if not authenticated
     openAuthModal();
     throw new Error("Authentication required");
+  }
+  if (res.status === 403) {
+    const errData = await res.json().catch(() => ({}));
+    if (
+      errData.code === "password_change_required" ||
+      (errData.detail && errData.detail.code === "password_change_required")
+    ) {
+      openChangePasswordModal();
+      throw new Error("Password change required");
+    }
+    throw new Error(errData.detail || "Forbidden: insufficient permissions");
   }
   if (!res.ok) {
     const errData = await res.json().catch(() => ({}));
@@ -748,26 +754,11 @@ async function checkAuth() {
     const data = await apiFetch("/api/auth/me");
     currentUser = data.user;
     updateUserBadge(currentUser);
-  } catch (e) {
-    // If not authenticated, try login with default operator
-    try {
-      const loginRes = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: "mine_operator", password: "operator123" })
-      });
-      if (loginRes.ok) {
-        const d = await loginRes.json();
-        authToken = d.token;
-        localStorage.setItem("subsidence_auth_token", authToken);
-        currentUser = d.user;
-        updateUserBadge(currentUser);
-      } else {
-        openAuthModal();
-      }
-    } catch (err) {
-      openAuthModal();
+    if (currentUser.force_pw_change) {
+      openChangePasswordModal();
     }
+  } catch (e) {
+    openAuthModal();
   }
 }
 
@@ -776,9 +767,26 @@ function updateUserBadge(user) {
   document.getElementById("currentUsername").textContent = user.username.toUpperCase();
   const roleEl = document.getElementById("currentUserRole");
   roleEl.textContent = user.role.toUpperCase();
-  roleEl.style.background = user.role === "admin" ? "var(--saffron)" : "var(--ink)";
+  roleEl.style.background = user.role === "manager" ? "var(--saffron)" : "var(--ink)";
   document.getElementById("btnOpenAuth").style.display = "none";
   document.getElementById("btnLogout").style.display = "inline-flex";
+
+  // Role-based cosmetic visibility
+  const isManager = user.role === "manager";
+  const isSuperior = ["manager", "safety_officer", "engineer"].includes(user.role);
+
+  const btnAddUser = document.getElementById("btnAddUser");
+  if (btnAddUser) btnAddUser.style.display = isManager ? "inline-flex" : "none";
+
+  const btnNotif = document.getElementById("btnNotifConfig");
+  if (btnNotif) btnNotif.style.display = isSuperior ? "inline-flex" : "none";
+
+  // Hide placement controls for workers
+  const isWorker = ["foreman", "miner"].includes(user.role);
+  const unplacedCard = document.getElementById("unplacedList");
+  if (unplacedCard && isWorker) {
+    unplacedCard.parentElement.style.display = "none";
+  }
 }
 
 function openAuthModal() {
@@ -789,47 +797,73 @@ function closeAuthModal() {
   document.getElementById("authModal").classList.remove("open");
 }
 
-let currentAuthTab = "login";
-function switchAuthTab(tab) {
-  currentAuthTab = tab;
-  document.getElementById("tabLogin").className = tab === "login" ? "modal-tab active" : "modal-tab";
-  document.getElementById("tabSignup").className = tab === "signup" ? "modal-tab active" : "modal-tab";
-  document.getElementById("authEmailGroup").style.display = tab === "signup" ? "block" : "none";
-  document.getElementById("authRoleGroup").style.display = tab === "signup" ? "block" : "none";
-  document.getElementById("authModalTitle").textContent = tab === "login" ? "SIGN IN" : "CREATE OPERATOR ACCOUNT";
+function openChangePasswordModal() {
+  document.getElementById("changePasswordModal").classList.add("open");
+}
+
+function closeChangePasswordModal() {
+  document.getElementById("changePasswordModal").classList.remove("open");
 }
 
 async function handleAuthSubmit(e) {
   e.preventDefault();
   const u = document.getElementById("authUsername").value.trim();
   const p = document.getElementById("authPassword").value;
-  const em = document.getElementById("authEmail").value.trim();
-  const role = document.getElementById("authRole").value;
 
   try {
-    const endpoint = currentAuthTab === "login" ? "/api/auth/login" : "/api/auth/signup";
-    const body = currentAuthTab === "login" ? { username: u, password: p } : { username: u, password: p, email: em, role };
-    
-    const res = await fetch(endpoint, {
+    const res = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
+      body: JSON.stringify({ username: u, password: p }),
+      credentials: "same-origin",
     });
 
     if (!res.ok) {
-      const err = await res.json();
+      const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || "Authentication failed");
     }
 
     const data = await res.json();
-    authToken = data.token;
-    localStorage.setItem("subsidence_auth_token", authToken);
     currentUser = data.user;
     updateUserBadge(currentUser);
     closeAuthModal();
-    fetchDashboardData();
+
+    if (data.force_pw_change) {
+      openChangePasswordModal();
+    } else {
+      fetchDashboardData();
+    }
   } catch (err) {
     alert("Auth error: " + err.message);
+  }
+}
+
+async function handleChangePasswordSubmit(e) {
+  e.preventDefault();
+  const cur = document.getElementById("cpCurrentPassword").value;
+  const newP = document.getElementById("cpNewPassword").value;
+  const confP = document.getElementById("cpConfirmPassword").value;
+
+  if (newP !== confP) {
+    alert("New password confirmation does not match.");
+    return;
+  }
+  if (newP.length < 10) {
+    alert("New password must be at least 10 characters long.");
+    return;
+  }
+
+  try {
+    await apiFetch("/api/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ current_password: cur, new_password: newP }),
+    });
+    alert("Password updated successfully.");
+    closeChangePasswordModal();
+    await checkAuth();
+    fetchDashboardData();
+  } catch (err) {
+    alert("Password change failed: " + err.message);
   }
 }
 
@@ -837,13 +871,11 @@ async function handleLogout() {
   try {
     await apiFetch("/api/auth/logout", { method: "POST" });
   } catch (e) {}
-  authToken = "";
-  localStorage.removeItem("subsidence_auth_token");
   currentUser = null;
   location.reload();
 }
 
-// Add User Modal
+// Add User Modal (Manager Only)
 function openAddUserModal() {
   document.getElementById("addUserModal").classList.add("open");
 }
@@ -854,16 +886,22 @@ function closeAddUserModal() {
 async function handleCreateUserSubmit(e) {
   e.preventDefault();
   const u = document.getElementById("newUsername").value.trim();
-  const em = document.getElementById("newEmail").value.trim();
+  const fn = document.getElementById("newFullName").value.trim();
+  const r = document.getElementById("newRole").value;
   const p = document.getElementById("newPassword").value;
-  const role = document.getElementById("newRole").value;
 
   try {
     await apiFetch("/api/users", {
       method: "POST",
-      body: JSON.stringify({ username: u, email: em, password: p, role })
+      body: JSON.stringify({
+        username: u,
+        full_name: fn,
+        role: r,
+        initial_password: p,
+        mine_ids: [],
+      }),
     });
-    alert(`User '${u}' created successfully with role '${role}'.`);
+    alert(`User '${u}' created successfully with role '${r}'.`);
     closeAddUserModal();
   } catch (err) {
     alert("Failed to create user: " + err.message);

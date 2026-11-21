@@ -1,6 +1,6 @@
 """HTTP router for hardware gateway topology and hierarchy.
 
-Owns the GET /api/gateways endpoint and aggregation across gateway branches.
+Owns the GET /api/gateways endpoint with superior role authorization and tenant scoping.
 Must NOT store readings, execute migrations, or handle node placement directly.
 """
 import time
@@ -12,6 +12,12 @@ from app.database import get_db
 from app.models.gateway import Gateway
 from app.models.node import Node
 from app.models.reading import Reading
+from app.models.user import User
+from app.security.dependencies import (
+    get_allowed_mine_ids,
+    require_role,
+)
+from app.security.roles import SUPERIOR_ROLES
 from app.services.hazard_classifier import LEVEL_NORMAL
 from app.services.node_serializer import serialize_node
 
@@ -19,10 +25,22 @@ router = APIRouter(tags=["gateways"])
 
 
 @router.get("/api/gateways")
-def api_gateways(db: Session = Depends(get_db)):
-    """Returns the gateway hierarchy and node inventory."""
+def api_gateways(
+    user: User = Depends(require_role(*SUPERIOR_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """Returns the gateway hierarchy and node inventory scoped to permitted mines (superiors only)."""
     now_ts = time.time()
-    nodes = db.query(Node).order_by(Node.gateway_id, Node.node_no).all()
+    allowed_mines = get_allowed_mine_ids(db, user)
+
+    nodes = (
+        db.query(Node)
+        .join(Gateway, Gateway.id == Node.gateway_id)
+        .filter(Gateway.mine_id.in_(allowed_mines))
+        .order_by(Node.gateway_id, Node.node_no)
+        .all()
+    )
+
     node_ids = [n.id for n in nodes]
     latest_map = {}
     if node_ids:
@@ -40,7 +58,7 @@ def api_gateways(db: Session = Depends(get_db)):
         for n in nodes
     ]
 
-    gateways = db.query(Gateway).all()
+    gateways = db.query(Gateway).filter(Gateway.mine_id.in_(allowed_mines)).all()
     tree = {}
     for gw in gateways:
         tree[gw.mac] = {
@@ -59,24 +77,14 @@ def api_gateways(db: Session = Depends(get_db)):
     status_ranks = {"normal": 0, "watch": 1, "warning": 2, "critical": 3}
     for n in nodes_list:
         mac = n["gateway_mac_address"]
-        if mac not in tree:
-            tree[mac] = {
-                "gateway_mac_address": mac,
-                "gateway_name": n.get("gateway") or f"Gateway {mac[-8:]}",
-                "node_count": 0,
-                "online_nodes": 0,
-                "placed_nodes": 0,
-                "worst_status": LEVEL_NORMAL,
-                "last_seen_age_s": None,
-                "nodes": [],
-            }
-        g = tree[mac]
-        g["nodes"].append(n)
-        g["node_count"] += 1
-        g["online_nodes"] += int(n["online"])
-        g["placed_nodes"] += int(n["placed"])
-        if g["last_seen_age_s"] is None or n["age_s"] < g["last_seen_age_s"]:
-            g["last_seen_age_s"] = n["age_s"]
+        if mac in tree:
+            g = tree[mac]
+            g["nodes"].append(n)
+            g["node_count"] += 1
+            g["online_nodes"] += int(n["online"])
+            g["placed_nodes"] += int(n["placed"])
+            if g["last_seen_age_s"] is None or n["age_s"] < g["last_seen_age_s"]:
+                g["last_seen_age_s"] = n["age_s"]
 
     for g in tree.values():
         g["online"] = g["online_nodes"] > 0

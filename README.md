@@ -78,9 +78,16 @@ coal-mine-subsidence-monitoring/
     │   │   ├── nodes.py                          # GET /api/nodes telemetry list
     │   │   ├── notifications.py                  # GET / POST /api/notifications/config
     │   │   └── placements.py                     # GET/POST /api/placements, DELETE, GET /api/unplaced
-    │   ├── security/                             # Authentication and cryptographic primitives
+    │   ├── schemas/                              # Pydantic serialization schemas and view models
+    │   │   ├── __init__.py                       # Package exports
+    │   │   └── nodes.py                          # WorkerNodeView (strict leakage prevention) & SuperiorNodeView
+    │   ├── security/                             # Authentication, RBAC, and cryptographic primitives
     │   │   ├── __init__.py                       # Security package exports
-    │   │   └── passwords.py                      # PBKDF2-HMAC-SHA256 (600k iter) & legacy hash verification
+    │   │   ├── dependencies.py                   # FastAPI dependencies (auth, role checks, mine scoping)
+    │   │   ├── passwords.py                      # PBKDF2-HMAC-SHA256 (600k iter) & legacy hash verification
+    │   │   ├── rate_limit.py                     # Sliding-window IP+username login brute-force limiter
+    │   │   ├── roles.py                          # Role definitions and role grouping logic
+    │   │   └── tokens.py                         # HS256 JWT session tokens and cookie management
     │   ├── services/                             # Core business logic (no FastAPI imports)
     │   │   ├── hazard_classifier.py              # Pure function classifier matching firmware thresholds
     │   │   ├── ingest_service.py                 # Packet verification, deduplication, and persistence
@@ -92,6 +99,7 @@ coal-mine-subsidence-monitoring/
     │       └── style.css                         # Neo-Brutalist dashboard styles
     └── tests/                                    # Pytest test suite (runs on test database)
         ├── conftest.py                           # TEST_DATABASE_URL fixture, migrations & table truncation
+        ├── test_auth_and_roles.py                # RBAC matrix, tenant isolation, rate limit, worker leakage tests
         ├── test_classifier.py                    # Spec matrix unit tests for hazard classifier
         ├── test_dashboard_routes.py              # Dashboard API endpoints and placement workflow tests
         ├── test_ingest.py                        # Packet length, gateway check, dedup, and classification tests
@@ -332,30 +340,34 @@ Radio command sent by gateway over ESP-NOW:
 
 | Method | Path | Allowed Callers | Request | Response | Status Codes |
 |---|---|---|---|---|---|
-| `POST` | `/api/ingest` | ESP32 Gateway | Body: Exactly 38-byte binary packet. Header: `X-Gateway-Id` (optional) | Empty body | `200`, `400` |
-| `GET` | `/api/nodes` | All (Dashboard) | Query: `gateway` (optional) | `{"now": float, "nodes": [...]}` | `200` |
-| `GET` | `/api/gateways` | All (Dashboard) | None | `{"now": float, "gateways": [...]}` | `200` |
-| `GET` | `/api/history` | All (Dashboard) | Query: `gateway`, `node_id`, `limit`, `only_alerts` | `{"readings": [...]}` | `200` |
-| `GET` | `/api/placements` | All (Dashboard) | None | `{"placements": [...]}` | `200` |
-| `POST` | `/api/placements` | All (Dashboard) | JSON: `{"gateway_mac_address", "node_id", "latitude", "longitude"}` | `{"message", "node_id", "gateway_mac"}` | `200`, `400`, `404` |
-| `DELETE` | `/api/placements/{gateway}/{node_id}` | All (Dashboard) | Path parameters | `{"message": "Node unplaced from map"}` | `200` |
-| `GET` | `/api/unplaced` | All (Dashboard) | None | `{"unplaced": [...]}` | `200` |
-| `GET` | `/api/health` | Public | None | `{"status": "healthy", "database": "PostgreSQL", ...}` | `200` |
-| `GET` | `/api/export.xlsx` | All (Dashboard) | Query: `gateway`, `node_id` | Excel binary spreadsheet (.xlsx) | `200` |
-| `GET` | `/api/auth/me` | All | None | `{"user": {...}, "allowed_gateways": null}` | `200` |
-| `POST` | `/api/auth/login` | All | JSON: credentials | `{"token": "...", "user": {...}}` | `200` |
-| `POST` | `/api/auth/logout` | All | None | `{"message": "Logged out"}` | `200` |
-| `GET` | `/api/users` | All | None | `{"users": [...]}` | `200` |
-| `POST` | `/api/users` | All | JSON: user fields | `{"message": "User added successfully"}` | `200` |
-| `GET` | `/api/alerts` | All (Dashboard) | None | `{"alerts": []}` | `200` |
-| `POST` | `/api/alerts/{alert_id}/ack` | All | Path parameter | `{"message": "Alert acknowledged", "id": ...}` | `200` |
-| `GET` | `/api/notifications/config` | All | None | `{"config": {}}` | `200` |
-| `POST` | `/api/notifications/config` | All | JSON: channel settings | `{"message": "Notification configurations updated"}` | `200` |
-| `POST` | `/api/demo/seed` | All (Dashboard) | None | `{"message": "Demo coal mine datasets seeded"}` | `200` |
-| `POST` | `/api/demo/step` | All (Dashboard) | None | `{"message": "Single simulated step generated"}` | `200` |
-| `POST` | `/api/demo/toggle-live`| All (Dashboard)| JSON (optional): `{"enable": bool}` | `{"running": bool}` | `200` |
-| `GET` | `/api/demo/status` | All (Dashboard) | None | `{"running": bool}` | `200` |
-| `POST` | `/api/demo/trigger-hazard` | All (Dashboard) | JSON: `{"gateway_mac_address", "node_id", "level"}` | `{"message": "..."}` | `200` |
+| `POST` | `/api/ingest` | Public (ESP32 Gateway) | Body: Exactly 38-byte binary packet. Optional header: `X-Gateway-Id` | Empty body | `200`, `400` |
+| `GET` | `/api/health` | Public | None | `{"status": "healthy", "database": "PostgreSQL", "payload_size": 38}` | `200` |
+| `POST` | `/api/auth/login` | Public | JSON: `{"username": "...", "password": "..."}` | Sets HttpOnly cookie `session`. Body: `{"token": "...", "user": {...}}` | `200`, `400`, `401`, `429` |
+| `GET` | `/api/auth/me` | Any Authenticated User | None (requires `session` cookie; works during force_pw_change) | `{"user": {...}, "allowed_gateways": null}` | `200`, `401` |
+| `POST` | `/api/auth/logout` | Any Authenticated User | None (clears `session` cookie) | `{"message": "Logged out"}` | `200`, `401` |
+| `POST` | `/api/auth/change-password` | Any Authenticated User | JSON: `{"old_password": "...", "new_password": "..."}` | Clears `force_pw_change`. Body: `{"message": "Password changed successfully"}` | `200`, `400`, `401` |
+| `GET` | `/api/nodes` | Any Role (Scoped) | Query: `gateway` (optional). Scoped to permitted mines. | `{"now": float, "nodes": [...]}`.<br>• **Workers** (`miner`, `foreman`): `WorkerNodeView` (stripped: no `gateway_mac_address`, `gateway`, `counter`, `score`, `reasons`, `placed_by`).<br>• **Superiors**: `SuperiorNodeView` (full telemetry, geotechnical analysis, placement metadata). | `200`, `401`, `403` |
+| `GET` | `/api/placements` | Any Role (Scoped) | Scoped to permitted mines. | `{"placements": [...]}` | `200`, `401`, `403` |
+| `POST` | `/api/placements` | Superiors Only | JSON: `{"gateway_mac_address", "node_id", "latitude", "longitude"}`. Permitted mines only. Records `placed_by = user.id`. | `{"message": "Node placed", "node_id": ..., "gateway_mac": "..."}` | `200`, `400`, `401`, `403`, `404` |
+| `DELETE` | `/api/placements/{gateway}/{node_id}` | Superiors Only | Path params. Permitted mines only. | `{"message": "Node unplaced from map"}` | `200`, `401`, `403`, `404` |
+| `GET` | `/api/unplaced` | Superiors Only | Scoped to permitted mines. | `{"unplaced": [...]}` | `200`, `401`, `403` |
+| `GET` | `/api/gateways` | Superiors Only | Scoped to permitted mines. | `{"now": float, "gateways": [...]}` | `200`, `401`, `403` |
+| `GET` | `/api/history` | Superiors Only | Query: `gateway`, `node_id`, `limit`, `only_alerts`. Permitted mines only. | `{"readings": [...]}` | `200`, `401`, `403`, `404` |
+| `GET` | `/api/export.xlsx` | Superiors Only | Query: `gateway`, `node_id`. Permitted mines only. | Excel binary spreadsheet (.xlsx) | `200`, `401`, `403`, `404` |
+| `GET` | `/api/alerts` | Superiors Only | Scoped to permitted mines. | `{"alerts": []}` | `200`, `401`, `403` |
+| `POST` | `/api/alerts/{alert_id}/ack` | Superiors Only | Path param. Permitted mines only. | `{"message": "Alert acknowledged", "id": ...}` | `200`, `401`, `403`, `404` |
+| `GET` | `/api/notifications/config` | Superiors Only | Scoped to user's company. | `{"config": {}}` | `200`, `401`, `403` |
+| `POST` | `/api/notifications/config` | Superiors Only | JSON: channel settings. Scoped to user's company. | `{"message": "Notification configurations updated"}` | `200`, `401`, `403` |
+| `POST` | `/api/notifications/test` | Superiors Only | None | `{"detail": "Notification testing will be available in Step 10"}` | `501`, `401`, `403` |
+| `GET` | `/api/users` | Manager Only | Company tenant isolated. | `{"users": [...]}` | `200`, `401`, `403` |
+| `POST` | `/api/users` | Manager Only | JSON: `{"username", "full_name", "role", "mine_ids"}`. Manager cannot create another manager. Auto-generates initial password and sets `force_pw_change=true`. | `{"message": "User created successfully", "user": {...}, "initial_password": "..."}` | `200`, `400`, `401`, `403` |
+| `PATCH` | `/api/users/{user_id}` | Manager Only | JSON: `{"role", "active", "mine_ids"}`. Cannot demote/deactivate self or last active manager. | `{"message": "User updated successfully", "user": {...}}` | `200`, `400`, `401`, `403`, `404` |
+| `DELETE` | `/api/users/{user_id}` | Manager Only | Path param. Cannot delete self or last active manager. | `{"message": "User deactivated successfully"}` | `200`, `400`, `401`, `403`, `404` |
+| `POST` | `/api/demo/seed` | Manager Only | Returns 404 when `ENABLE_DEMO_ROUTES=false`. | `{"message": "Demo coal mine datasets seeded"}` | `200`, `401`, `403`, `404` |
+| `POST` | `/api/demo/step` | Manager Only | Returns 404 when `ENABLE_DEMO_ROUTES=false`. | `{"message": "Single simulated step generated"}` | `200`, `401`, `403`, `404` |
+| `POST` | `/api/demo/toggle-live`| Manager Only | JSON (optional): `{"enable": bool}`. Returns 404 when `ENABLE_DEMO_ROUTES=false`. | `{"running": bool}` | `200`, `401`, `403`, `404` |
+| `GET` | `/api/demo/status` | Manager Only | Returns 404 when `ENABLE_DEMO_ROUTES=false`. | `{"running": bool}` | `200`, `401`, `403`, `404` |
+| `POST` | `/api/demo/trigger-hazard` | Manager Only | JSON: `{"gateway_mac_address", "node_id", "level"}`. 404 when demo disabled. | `{"message": "..."}` | `200`, `401`, `403`, `404` |
 | `GET` | `/` | Browser | None | HTML dashboard (`index.html`) | `200` |
 
 ### Planned Routes (Future Steps)
@@ -416,7 +428,7 @@ Radio command sent by gateway over ESP-NOW:
 |---|---|---|---|---|
 | **Step 1** | PostgreSQL migration and seed | **Done** | The simulator posts packets, rows land in PostgreSQL, the existing dashboard shows live nodes and values exactly as before, and re-running the migration and seed on a fresh database works. | 2026-11-22 |
 | **Step 1.5** | Restructure and Hardening | **Done** | Modular architecture, strict 38-byte codec, pure hazard classifier matching firmware, eager loading for N+1 queries, psycopg v3 driver only, isolated test database suite. | 2026-11-22 |
-| **Step 2** | Login and roles | *In Progress* | Users table, login, require_role, company and mine scoping. A worker token gets 403 on every superior route. | — |
+| **Step 2** | Login and roles | **Done** | Users table, login, require_role, company and mine scoping. A worker token gets 403 on every superior route. Worker view strictly prevents field leakage. | 2026-11-22 |
 | **Step 3** | Mines, tunnels, gateways and node placement | *Not started* | Onboarding screen, create mine, add tunnels, register gateway (key shown once), tunnel picker on Place on Map with same-mine check. | — |
 | **Step 4** | Watchdog and offline detection | *Not started* | ESP watchdog, sensor-fault flag, gateway heartbeat, server last-seen check, gateway-offline alert. Unplugging a node shows it offline and fires one alert. | — |
 | **Step 8 (SOS path)** | Worker reports and node SOS | *Not started* | Report form, inbox, status flow, node SOS button and SOS packet. SOS packet creates an incident and alert within a few seconds. | — |
@@ -427,16 +439,42 @@ Radio command sent by gateway over ESP-NOW:
 
 1. **Interim `X-Gateway-Id` Header**:
    As required for Step 1 compatibility, the gateway check resolves the gateway row by the MAC address contained in the 38-byte body. Cryptographic `X-Gateway-Key` verification belongs to Step 3.
-2. **Permissive Dashboard Auth (Phase A)**:
-   Full JWT session enforcement and multi-tenant scoping are addressed in Step 2.
-3. **`seed_demo_data.py` Placeholder Hash**:
+2. **Tunnel Scoping in Step 2**:
+   In Step 2, miners and foremen see nodes across all mines assigned to them in `user_mines`. Tunnel-level assignment filtering (`assignments` table and active shift checks) belongs to Step 5.
+3. **In-Memory Rate Limiting**:
+   Failed login attempts are rate limited in-memory (5 failures per username + IP sliding window over 15 minutes returning HTTP 429 with `Retry-After`). In a multi-worker production deployment, this will be backed by Redis.
+4. **`seed_demo_data.py` Placeholder Hash**:
    Generates gateways with placeholder `api_key_hash` because gateway key generation belongs to Step 3.
-4. **Commands and SOS Alerting**:
+5. **Commands and SOS Alerting**:
    Ingest parses `sos_active` and returns an empty response body without dispatching commands or triggering external webhooks (slated for later steps).
 
 ---
 
 ## 12. Changelog
+
+### 2026-11-22 - Step 2: Login and RBAC Roles
+- **Authentication & Session Tokens**:
+  - Implemented HS256 JWT sessions stored in HttpOnly, SameSite=Strict cookies (`session`).
+  - Added password hashing with PBKDF2-HMAC-SHA256 (600,000 iterations, 16-byte cryptographically secure random salt).
+  - Backward compatibility for legacy `<salt>$<hash>` format (100,000 iterations) with transparent automatic rehash upon successful authentication.
+  - Constant-time dummy hash on non-existent usernames to mitigate timing side-channel attacks.
+  - In-memory rate limiting for login attempts (5 failures / 15 min per username + client IP, returning 429 with `Retry-After`).
+  - Forced password change workflow: new users must change their password on first login via `POST /api/auth/change-password`; all other non-auth endpoints return 403 `PASSWORD_CHANGE_REQUIRED`.
+- **Role-Based Access Control (RBAC) & Scoping**:
+  - Implemented role groups: Workers (`miner`, `foreman`) and Superiors (`safety_officer`, `engineer`, `manager`).
+  - Protected all sensitive endpoints (`/api/gateways`, `/api/history`, `/api/export.xlsx`, `/api/alerts`, `/api/unplaced`, `/api/placements` mutations) to require superior roles (403 for workers).
+  - Tenant and mine scoping: Managers access all company mines; other users access only assigned mines (`user_mines`). Multi-tenant isolation returns 404 for resources belonging to another company.
+  - Segregated node view serialization: `WorkerNodeView` uses Pydantic with `extra="forbid"` to strictly prevent leakage of gateway MAC, counter, raw scores, reasons, and placement metadata to miners and foremen.
+- **User Management & Hierarchy Protections**:
+  - Added Manager-only user management endpoints (`GET/POST /api/users`, `PATCH/DELETE /api/users/{id}`).
+  - Managers cannot create managers, cannot demote/deactivate their own account, and cannot deactivate the company's last active manager.
+- **Frontend Hardening**:
+  - Removed `localStorage` token storage in favor of HttpOnly cookie session handling (`credentials: "same-origin"`).
+  - Added modal for forced password changes (`#changePasswordModal`).
+  - Implemented user creation modal for managers (`#addUserModal`) with automatic initial password presentation.
+  - Scoped UI controls dynamically based on user role (e.g. hiding Place Node, Unplace, Demo, History, Export for workers).
+- **Automated Verification**:
+  - Created comprehensive RBAC test suite (`tests/test_auth_and_roles.py`) with 12 tests covering route policy compliance, role matrices, company tenant isolation, mine scoping, force password change, user deactivation, JWT expiry, rate limiting, and field leakage. All 32 test cases passing.
 
 ### 2026-11-22 - Step 1.5: Restructure and Hardening
 - **Restructured Repository**:
