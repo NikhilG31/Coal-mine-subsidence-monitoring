@@ -112,15 +112,15 @@ coal-mine-subsidence-monitoring/
 
 | Symptom | Location to Inspect |
 |---|---|
-| Node shows wrong hazard level or color | [services/hazard_classifier.py](file:///c:/Nikhil/Mine%20Subsidence%20Monitoring/server/app/services/hazard_classifier.py) |
-| Ingest packet rejected with HTTP 400 | [services/packet_codec.py](file:///c:/Nikhil/Mine%20Subsidence%20Monitoring/server/app/services/packet_codec.py) & [routers/ingest.py](file:///c:/Nikhil/Mine%20Subsidence%20Monitoring/server/app/routers/ingest.py) |
-| Duplicate or missing readings; reboot counter issues | [services/ingest_service.py](file:///c:/Nikhil/Mine%20Subsidence%20Monitoring/server/app/services/ingest_service.py) |
-| Database schema, constraint, or migration failure | [models/](file:///c:/Nikhil/Mine%20Subsidence%20Monitoring/server/app/models/) & [migrations/versions/](file:///c:/Nikhil/Mine%20Subsidence%20Monitoring/server/migrations/versions/) |
-| Environment variables not resolving or missing error | [config.py](file:///c:/Nikhil/Mine%20Subsidence%20Monitoring/server/app/config.py) |
-| Password verification or hashing discrepancy | [security/passwords.py](file:///c:/Nikhil/Mine%20Subsidence%20Monitoring/server/app/security/passwords.py) |
-| Dashboard map markers or inspector not updating | [static/app.js](file:///c:/Nikhil/Mine%20Subsidence%20Monitoring/server/app/static/app.js) & [routers/nodes.py](file:///c:/Nikhil/Mine%20Subsidence%20Monitoring/server/app/routers/nodes.py) |
-| Simulator fails to send packets or times out | [dev/simulator.py](file:///c:/Nikhil/Mine%20Subsidence%20Monitoring/server/app/dev/simulator.py) |
-| N+1 query slowdown on history or export | [routers/history.py](file:///c:/Nikhil/Mine%20Subsidence%20Monitoring/server/app/routers/history.py) & [routers/export.py](file:///c:/Nikhil/Mine%20Subsidence%20Monitoring/server/app/routers/export.py) |
+| Node shows wrong hazard level or color |  
+| Ingest packet rejected with HTTP 400  & [routers/ingest.py]
+| Duplicate or missing readings; reboot counter issues 
+| Database schema, constraint, or migration failure & [migrations/versions/]
+| Environment variables not resolving or missing error | [config.py]
+| Password verification or hashing discrepancy | [security/passwords.py]
+| Dashboard map markers or inspector not updating | [static/app.js] & [routers/nodes.py] |
+| Simulator fails to send packets or times out | [dev/simulator.py] |
+| N+1 query slowdown on history or export | [routers/history.py] & [routers/export.py]
 
 ---
 
