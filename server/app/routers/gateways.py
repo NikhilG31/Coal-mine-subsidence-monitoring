@@ -3,6 +3,7 @@
 Owns GET/PATCH/DELETE /api/gateways and /api/gateways/{id}/rotate-key endpoints.
 Must NOT store telemetry readings, alter packet formats, or expose API keys in list responses.
 """
+import datetime
 import time
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -22,6 +23,7 @@ from app.security.dependencies import (
 )
 from app.security.roles import ROLE_MANAGER, SUPERIOR_ROLES
 from app.services.audit import record_audit
+from app.services.connectivity import gateway_is_online
 from app.services.gateway_keys import generate_key, hash_key
 from app.services.hazard_classifier import LEVEL_NORMAL
 from app.services.latest_readings import get_latest_readings
@@ -53,6 +55,7 @@ def api_gateways(
 ):
     """Returns the gateway hierarchy and node inventory scoped to permitted mines (superiors only)."""
     now_ts = time.time()
+    now_dt = datetime.datetime.fromtimestamp(now_ts, tz=datetime.timezone.utc)
     allowed_mines = get_allowed_mine_ids(db, user)
 
     if mine_id is not None:
@@ -87,6 +90,7 @@ def api_gateways(
             "gateway_mac_address": gw.mac,
             "gateway_name": gw.name,
             "active": gw.active,
+            "online": gateway_is_online(gw.last_seen_at, now_dt),
             "node_count": 0,
             "online_nodes": 0,
             "placed_nodes": 0,
@@ -110,7 +114,6 @@ def api_gateways(
                 g["last_seen_age_s"] = n["age_s"]
 
     for g in tree.values():
-        g["online"] = g["online_nodes"] > 0
         if g["nodes"]:
             worst = max(g["nodes"], key=lambda node: status_ranks.get(node["status"], 0))
             g["worst_status"] = worst["status"]
@@ -143,10 +146,11 @@ def api_patch_gateway(
         gw.active = req.active
         changes["active"] = req.active
 
+    action = "gateway.disable" if req.active is False else "gateway.update"
     record_audit(
         db,
         user,
-        action="gateway.update",
+        action=action,
         entity="gateway",
         entity_id=gw.id,
         detail=changes,
@@ -211,7 +215,7 @@ def api_delete_gateway(
     user: User = Depends(require_role(ROLE_MANAGER)),
     db: Session = Depends(get_db),
 ):
-    """Deletes an unattached hardware gateway (Manager only; fails if nodes exist)."""
+    """Disables a hardware gateway (Manager only; sets active=false)."""
     gw = (
         db.query(Gateway)
         .join(Mine, Mine.id == Gateway.mine_id)
@@ -221,23 +225,22 @@ def api_delete_gateway(
     if not gw:
         raise HTTPException(status_code=404, detail="Gateway not found")
 
-    node_count = db.query(Node).filter(Node.gateway_id == gw.id).count()
-    if node_count > 0:
-        raise HTTPException(
-            status_code=409,
-            detail="Cannot delete gateway with registered nodes",
-        )
-
+    gw.active = False
     record_audit(
         db,
         user,
-        action="gateway.delete",
+        action="gateway.disable",
         entity="gateway",
         entity_id=gw.id,
-        detail={},
+        detail={"active": False},
     )
-    db.delete(gw)
     db.commit()
 
-    security_logger.info("Manager '%s' deleted gateway %d (%s)", user.username, gw.id, gw.mac)
-    return {"message": "Gateway deleted successfully"}
+    security_logger.info("Manager '%s' disabled gateway %d (%s)", user.username, gw.id, gw.mac)
+    return {
+        "id": gw.id,
+        "name": gw.name,
+        "mac": gw.mac,
+        "active": gw.active,
+        "mine_id": gw.mine_id,
+    }

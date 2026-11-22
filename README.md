@@ -113,15 +113,19 @@ coal-mine-subsidence-monitoring/
 
 | Symptom | Location to Inspect |
 |---|---|
-| Node shows wrong hazard level or color |  
-| Ingest packet rejected with HTTP 400  & [routers/ingest.py]
-| Duplicate or missing readings; reboot counter issues 
-| Database schema, constraint, or migration failure & [migrations/versions/]
-| Environment variables not resolving or missing error | [config.py]
-| Password verification or hashing discrepancy | [security/passwords.py]
-| Dashboard map markers or inspector not updating | [static/app.js] & [routers/nodes.py] |
-| Simulator fails to send packets or times out | [dev/simulator.py] |
-| N+1 query slowdown on history or export | [routers/history.py] & [routers/export.py]
+| Wrong hazard level or color | `services/hazard_classifier.py` |
+| Ingest packet rejected with HTTP 400 | `services/packet_codec.py` + `routers/ingest.py` |
+| Duplicate or missing readings; reboot counter issues | `services/ingest_service.py` |
+| Ingest packet rejected with HTTP 401 | `services/gateway_keys.py` + `routers/ingest.py` |
+| Placement errors or same-mine violations | `services/node_placement.py` + `routers/placements.py` |
+| Login, 403, or 404 access control problems | `security/dependencies.py` |
+| Audit rows missing or detail discrepancy | `services/audit.py` |
+| Database schema, constraint, or migration failure | `models/` + `migrations/versions/` |
+| Environment variables not resolving or missing error | `config.py` |
+| Password verification or hashing discrepancy | `security/passwords.py` |
+| Dashboard map markers or inspector not updating | `static/app.js` + `routers/nodes.py` |
+| Simulator fails to send packets or times out | `dev/simulator.py` |
+| N+1 query slowdown on history or export | `routers/history.py` + `routers/export.py` |
 
 ---
 
@@ -137,7 +141,11 @@ Configuration is loaded from `.env` in the repository root using `python-dotenv`
 | `SEED_MANAGER_USERNAME` | No | Manager username for initial seed | `manager` |
 | `SEED_MANAGER_PASSWORD` | No | Manager initial password (prompts if missing in tty) | (User secret) |
 | `SEED_MANAGER_FULL_NAME` | No | Full display name for initial Manager | `General Manager` |
-| `OFFLINE_AFTER_S` | No | Seconds of silence before a node is marked offline | `35` |
+| `OFFLINE_AFTER_S` | No | Legacy alias for `NODE_OFFLINE_AFTER_S` | `35` |
+| `NODE_OFFLINE_AFTER_S` | No | Seconds of silence before a sensor node is marked offline (min 10, max 86400) | `35` |
+| `GATEWAY_OFFLINE_AFTER_S` | No | Seconds of silence before a gateway is marked offline (min 5, max 86400, >= NODE_OFFLINE_AFTER_S) | `60` |
+| `WATCHDOG_INTERVAL_S` | No | Evaluation interval for offline watchdog thread in seconds (min 1, max 3600) | `30` |
+| `WATCHDOG_ENABLED` | No | Flag to enable/disable the background offline watchdog daemon thread | `true` |
 | `ENABLE_DEMO_ROUTES` | No | Controls accessibility of `/api/demo/*` endpoints | `false` (code default), `true` (.env.example) |
 | `JWT_SECRET` | Phase B | Secret key for HS256 JWT tokens (>= 32 chars) | (User secret) |
 | `SESSION_HOURS` | Phase B | Session lifetime in hours | `8` |
@@ -172,9 +180,14 @@ alembic upgrade head
 
 ### 2. Seed Initial Company and Manager
 ```bash
-python -m app.cli.seed_manager --company "Bharat Coking Coal Limited" --username "manager" --password "Manager@2026"
+# Using interactive getpass prompt:
+python -m app.cli.seed_manager --company "Bharat Coking Coal Limited" --username "manager"
+
+# Or specifying the password via environment variable:
+export SEED_MANAGER_PASSWORD="your-secure-password"
+python -m app.cli.seed_manager --company "Bharat Coking Coal Limited" --username "manager"
 ```
-*(If `--password` is omitted in an interactive terminal, `getpass` prompts securely).*
+*(If `SEED_MANAGER_PASSWORD` is not set and `--password` is omitted in an interactive terminal, `getpass` prompts securely).*
 
 ### 3. Seed Demo Mine and Gateway Inventory (Dev Only)
 ```bash
@@ -240,6 +253,7 @@ The schema is managed strictly via Alembic migrations. The database contains onl
 - `role` (`String(32)`, nullable=False, check: `'manager'`, `'safety_officer'`, `'engineer'`, `'foreman'`, `'miner'`)
 - `active` (`Boolean`, nullable=False, server_default=`true`)
 - `force_pw_change` (`Boolean`, nullable=False, server_default=`false`)
+- `token_version` (`Integer`, nullable=False, server_default=`0`): Monotonic session version integer. Embedded as `tv` claim in JWT. Any password change, administrative password reset, or account deactivation increments this counter, immediately invalidating all previous session tokens across all devices.
 
 ### 5. `user_mines`
 - `user_id` (`Integer`, FK -> `users.id` ON DELETE CASCADE, PK)
@@ -299,12 +313,50 @@ The schema is managed strictly via Alembic migrations. The database contains onl
 - `ts` (`TIMESTAMPTZ`, nullable=False, server_default=`now()`)
 - `company_id` (`Integer`, FK -> `companies.id` ON DELETE CASCADE, nullable=False, index)
 - `user_id` (`Integer`, FK -> `users.id` ON DELETE SET NULL, nullable=True)
-- `action` (`String(64)`, nullable=False): Operation tag (e.g. `mine.create`, `gateway.register`, `gateway.rotate_key`, `node.place`, `user.update`)
-- `entity` (`String(64)`, nullable=False): Target entity type (`mine`, `tunnel`, `gateway`, `node`, `user`)
+- `action` (`String(64)`, nullable=False): Operation tag (e.g. `mine.create`, `tunnel.create`, `gateway.register`, `gateway.rotate_key`, `gateway.update`, `gateway.disable`, `node.place`, `node.unplace`, `user.create`, `user.update`, `user.deactivate`, `auth.password_change`, `alert.acknowledge`)
+- `entity` (`String(64)`, nullable=False): Target entity type (`mine`, `tunnel`, `gateway`, `node`, `user`, `alert`)
 - `entity_id` (`Integer`, nullable=True): Primary key of the affected entity
 - `detail` (`JSONB`, nullable=False, server_default=`'{}'`)
 - **Index**: `ix_audit_log_company_id_ts`: `(company_id, ts DESC)`
 - **Immutability**: Audit logs record all administrative, security, and hardware mutations atomically with the change in the same transaction. Failed operations write nothing. Sensitive tokens, passwords, and API keys are strictly excluded from the `detail` payload.
+
+### 10. `alerts`
+- `id` (`BigInteger`, PK, autoincrement)
+- `company_id` (`Integer`, FK -> `companies.id` ON DELETE CASCADE, nullable=False, index)
+- `mine_id` (`Integer`, FK -> `mines.id` ON DELETE CASCADE, nullable=False, index)
+- `gateway_id` (`Integer`, FK -> `gateways.id` ON DELETE CASCADE, nullable=False, index)
+- `node_id` (`Integer`, FK -> `nodes.id` ON DELETE CASCADE, nullable=True, index)
+- `kind` (`String(32)`, nullable=False, check constraint: `kind IN ('node_offline', 'gateway_offline')`)
+- `title` (`String(255)`, nullable=False)
+- `opened_at` (`TIMESTAMPTZ`, nullable=False, server_default=`now()`)
+- `resolved_at` (`TIMESTAMPTZ`, nullable=True)
+- `acknowledged_by` (`Integer`, FK -> `users.id` ON DELETE SET NULL, nullable=True)
+- `acknowledged_at` (`TIMESTAMPTZ`, nullable=True)
+- **Constraints**:
+  - `ck_alerts_kind`: `kind IN ('node_offline', 'gateway_offline')`
+  - `ck_alerts_kind_node`: `(kind = 'node_offline' AND node_id IS NOT NULL) OR (kind = 'gateway_offline' AND node_id IS NULL)`
+- **Partial Unique Indexes**:
+  - `uq_alerts_open_node`: `UNIQUE (node_id) WHERE kind = 'node_offline' AND resolved_at IS NULL`
+  - `uq_alerts_open_gateway`: `UNIQUE (gateway_id) WHERE kind = 'gateway_offline' AND resolved_at IS NULL`
+- **Index**:
+  - `ix_alerts_mine_id_opened_at`: `(mine_id, opened_at DESC)`
+
+> **Why Partial Unique Indexes on alerts?**  
+> Partial unique indexes on PostgreSQL enforce that at most **one** open alert (`resolved_at IS NULL`) can exist concurrently for any given hardware entity (node or gateway). Even under extreme database concurrency across multiple worker threads or cluster instances, the DB engine rejects duplicate opens via `IntegrityError`, which the watchdog service catches and treats as already open. When a device recovers, `resolved_at` is stamped; if the device goes offline again later, a clean new alert row is created without overwriting historical incident records.
+
+### 6.1. Connectivity Rules and Watchdog Architecture
+
+- **Single Source of Truth (`services/connectivity.py`)**:
+  - `node_is_online(last_seen_at, now) -> bool`: Returns `True` iff `last_seen_at` is not None and `(now - last_seen_at) <= NODE_OFFLINE_AFTER_S` (default 35s).
+  - `gateway_is_online(last_seen_at, now) -> bool`: Returns `True` iff `last_seen_at` is not None and `(now - last_seen_at) <= GATEWAY_OFFLINE_AFTER_S` (default 60s).
+- **Core Watchdog Evaluation Order (`services/watchdog_service.py`)**:
+  1. **Active and Seen Gateways Only**: Gateways with `active=False` or `last_seen_at IS NULL` (registered but not yet powered on) are ignored to avoid false alarms.
+  2. **Dead Gateway Handling**: If a gateway is offline, exactly 1 `gateway_offline` alert is opened (if not already open). Crucially, the watchdog **skips** evaluating that gateway's child nodes (we cannot know if nodes are dead when their backhaul gateway is down) and **auto-resolves** any open `node_offline` alerts for those nodes to eliminate false node alarms.
+  3. **Online Gateway Handling**: If an open `gateway_offline` alert exists, it is immediately resolved (`resolved_at = now`). Then, only **PLACED** nodes (`is_placed(node)`) are evaluated. Unplaced spare nodes in inventory never raise alerts. Offline placed nodes open 1 `node_offline` alert; online nodes auto-resolve existing open alerts.
+- **Background Daemon Runner (`app/watchdog_runner.py`)**:
+  - Executes as a daemon thread started and stopped via FastAPI `lifespan` in `app/main.py`.
+  - **Single-Worker PostgreSQL Advisory Lock**: Acquires `pg_try_advisory_xact_lock(8392104)` per cycle. If another worker holds the lock, the cycle skips cleanly.
+  - **Startup Grace Period**: Suppresses alert evaluation during the first `NODE_OFFLINE_AFTER_S` seconds following server boot, allowing hardware gateways to transmit their first telemetry before timeouts fire.
 
 > **Why a Partial Unique Index on readings?**  
 > While firmware transmits `boot_id = 0`, node transmission counters restart from 0 after each hardware reboot. A strict non-partial unique constraint on `(node_id, boot_id, counter)` would permanently reject valid post-reboot readings that reuse earlier counter values. Therefore, the unique index applies **only** where `boot_id <> 0`. For `boot_id = 0`, deduplication is performed at the application layer with a 4-second time window rule.
@@ -372,19 +424,19 @@ Radio command sent by gateway over ESP-NOW:
 |---|---|---|---|---|---|
 | `POST` | `/api/ingest` | ESP32 Gateways | Body: Exactly 38-byte binary packet. Header: `X-Gateway-Key` (required unless `ALLOW_UNKEYED_INGEST=true`). `X-Gateway-Id` is ignored. | Empty body | `200`, `400`, `401` |
 | `GET` | `/api/health` | Public | None | `{"status": "healthy", "database": "PostgreSQL", "payload_size": 38}` | `200` |
-| `POST` | `/api/auth/login` | Public | JSON: `{"username": "...", "password": "..."}` | Sets HttpOnly cookie `session`. Body: `{"token": "...", "user": {...}}` | `200`, `400`, `401`, `429` |
+| `POST` | `/api/auth/login` | Public | JSON: `{"username": "...", "password": "..."}` | Sets HttpOnly cookie `session`. Body: `{"user": {...}, "force_pw_change": bool}` | `200`, `400`, `401`, `429` |
 | `GET` | `/api/auth/me` | Any Authenticated User | None (requires `session` cookie; works during force_pw_change) | `{"user": {...}, "allowed_mine_ids": [...]}` | `200`, `401` |
 | `POST` | `/api/auth/logout` | Public | None (always returns 200 and clears `session` cookie) | `{"message": "Logged out"}` | `200` |
-| `POST` | `/api/auth/change-password` | Any Authenticated User | JSON: `{"current_password": "...", "new_password": "..."}` | Clears `force_pw_change`, records audit. Body: `{"message": "..."}` | `200`, `400`, `401` |
+| `POST` | `/api/auth/change-password` | Any Authenticated User | JSON: `{"current_password": "...", "new_password": "..."}` | Clears `force_pw_change`, records audit (`auth.password_change`). Body: `{"message": "..."}` | `200`, `400`, `401` |
 | `GET` | `/api/mines` | Any Role (Scoped) | Scoped to permitted mines. | `{"mines": [...]}` | `200`, `401` |
 | `POST` | `/api/mines` | Manager Only | JSON: `{"name", "subsidiary", "status", "method", "lat", "lon", "area_ha", "max_depth_m"}`. Records audit, auto-assigns creator. | Created mine object | `200`, `400`, `401`, `403`, `409` |
 | `GET` | `/api/mines/{id}/tunnels` | Any Role (Scoped) | Scoped to permitted mines. | `{"tunnels": [...]}` | `200`, `401`, `404` |
 | `POST` | `/api/mines/{id}/tunnels` | Manager Only | JSON: `{"name", "code", "depth_m", "status"}`. Records audit. | Created tunnel object | `200`, `400`, `401`, `403`, `404`, `409` |
 | `POST` | `/api/mines/{id}/gateways` | Manager Only | JSON: `{"name", "mac"}`. Generates 256-bit key, records audit. Header `Cache-Control: no-store`. | `{"id", "name", "mac", "active", "mine_id", "api_key"}` | `200`, `400`, `401`, `403`, `404`, `409` |
 | `GET` | `/api/mines/{id}/gateways` | Manager Only | Path param. Excludes key and hash. | `{"gateways": [...]}` | `200`, `401`, `403`, `404` |
-| `PATCH` | `/api/gateways/{id}` | Manager Only | JSON: `{"name", "active"}`. Records audit. | Updated gateway object (no key) | `200`, `400`, `401`, `403`, `404` |
+| `PATCH` | `/api/gateways/{id}` | Manager Only | JSON: `{"name", "active"}`. Records audit (`gateway.update`, or `gateway.disable` when `active: false`). | Updated gateway object (no key) | `200`, `400`, `401`, `403`, `404` |
 | `POST` | `/api/gateways/{id}/rotate-key` | Manager Only | Path param. Generates new key, updates hash, records audit. Header `Cache-Control: no-store`. | `{"id", "name", "mac", "active", "mine_id", "api_key"}` | `200`, `401`, `403`, `404` |
-| `DELETE` | `/api/gateways/{id}` | Manager Only | Path param. Only succeeds if gateway has zero nodes. Records audit. | `{"message": "Gateway deleted successfully"}` | `200`, `401`, `403`, `404`, `409` |
+| `DELETE` | `/api/gateways/{id}` | Manager Only | Path param. Disables gateway (`active=false`). Records audit (`gateway.disable`). | Updated gateway object (no key) | `200`, `401`, `403`, `404` |
 | `GET` | `/api/nodes` | Any Role (Scoped) | Query: `gateway` (optional), `mine_id` (optional). Scoped to permitted mines.<br>• **Workers**: `WorkerNodeView` (stripped).<br>• **Superiors**: `SuperiorNodeView`. | `{"now": float, "nodes": [...]}` | `200`, `401`, `404` |
 | `GET` | `/api/placements` | Any Role (Scoped) | Query: `mine_id` (optional). Scoped to permitted mines.<br>• **Workers**: `WorkerPlacementView`.<br>• **Superiors**: `SuperiorPlacementView`. | `{"placements": [...]}` | `200`, `401`, `404` |
 | `GET` | `/api/unplaced` | Superiors Only | Query: `mine_id` (optional). Scoped to permitted mines. | `{"unplaced": [...]}` | `200`, `401`, `403`, `404` |
@@ -393,19 +445,19 @@ Radio command sent by gateway over ESP-NOW:
 | `GET` | `/api/gateways` | Superiors Only | Query: `mine_id` (optional). Scoped to permitted mines. | `{"now": float, "gateways": [...]}` | `200`, `401`, `403`, `404` |
 | `GET` | `/api/history` | Superiors Only | Query: `gateway`, `node_id`, `limit`, `only_alerts`. Permitted mines only. | `{"readings": [...]}` | `200`, `401`, `403`, `404` |
 | `GET` | `/api/export.xlsx` | Superiors Only | Query: `gateway`, `node_id`. Permitted mines only. | Excel binary spreadsheet (.xlsx) | `200`, `401`, `403`, `404` |
-| `GET` | `/api/alerts` | Superiors Only | Scoped to permitted mines. | `{"alerts": []}` | `200`, `401`, `403` |
-| `POST` | `/api/alerts/{alert_id}/ack` | Superiors Only | Path param. Permitted mines only. | `{"message": "Alert acknowledged", "id": ...}` | `200`, `401`, `403`, `404` |
+| `GET` | `/api/alerts` | Superiors Only | Query: `status` (`open` or `all`, default `open`), `mine_id` (optional). Scoped to permitted mines. Ordered by `opened_at DESC`, limit 200. | `{"alerts": [{"id", "kind", "title", "mine_id", "gateway_id", "node_id", "opened_at", "resolved_at", "acknowledged_at", "acknowledged_by_name"}]}` | `200`, `401`, `403` |
+| `POST` | `/api/alerts/{alert_id}/ack` | Superiors Only | Path param. Permitted mines only. Sets `acknowledged_by` and `acknowledged_at`. Idempotent 200. Records audit (`alert.acknowledge`). | Serialized alert object with current state | `200`, `401`, `403`, `404` |
 | `GET` | `/api/notifications/config` | Superiors Only | Scoped to user's company. | `{"config": {}}` | `200`, `401`, `403` |
 | `POST` | `/api/notifications/config` | Superiors Only | JSON: channel settings. Scoped to user's company. | `{"message": "Notification configurations updated"}` | `200`, `401`, `403` |
 | `POST` | `/api/notifications/test` | Superiors Only | None | `{"detail": "Notification testing will be available in Step 10"}` | `501`, `401`, `403` |
 | `GET` | `/api/users` | Manager Only | Company tenant isolated. | `{"users": [...]}` | `200`, `401`, `403` |
 | `POST` | `/api/users` | Manager Only | JSON: `{"username", "full_name", "role", "mine_ids", "initial_password"}`. Records audit. | Created user object | `200`, `400`, `401`, `403`, `404`, `409` |
 | `PATCH` | `/api/users/{user_id}` | Manager Only | JSON: `{"role", "active", "mine_ids", "reset_password", "full_name"}`. Records audit. | Updated user object | `200`, `400`, `401`, `403`, `404` |
-| `DELETE` | `/api/users/{user_id}` | Manager Only | Path param. Soft-deactivates user (`active=false`). Records audit. | `{"message": "User deactivated successfully"}` | `200`, `400`, `401`, `403`, `404` |
+| `DELETE` | `/api/users/{user_id}` | Manager Only | Path param. Soft-deactivates user (`active=false`). Records audit (`user.deactivate`). | `{"message": "User deactivated successfully"}` | `200`, `400`, `401`, `403`, `404` |
 | `POST` | `/api/demo/seed` | Manager Only | Returns 404 when `ENABLE_DEMO_ROUTES=false`. Seeds mine, tunnel, and simulator gateways with `DEMO_GATEWAY_KEY`. | `{"message": "Demo coal mine datasets seeded"}` | `200`, `401`, `403`, `404` |
 | `POST` | `/api/demo/step` | Manager Only | Returns 404 when `ENABLE_DEMO_ROUTES=false`. | `{"message": "Single simulated step generated"}` | `200`, `401`, `403`, `404` |
 | `POST` | `/api/demo/toggle-live`| Manager Only | JSON (optional): `{"enable": bool}`. Returns 404 when `ENABLE_DEMO_ROUTES=false`. | `{"running": bool}` | `200`, `401`, `403`, `404` |
-| `GET` | `/api/demo/status` | Any Authenticated User | Returns 404 when `ENABLE_DEMO_ROUTES=false`. | `{"running": bool}` | `200`, `401`, `404` |
+| `GET` | `/api/demo/status` | Manager Only | Returns 404 when `ENABLE_DEMO_ROUTES=false`. | `{"running": bool}` | `200`, `401`, `403`, `404` |
 | `POST` | `/api/demo/trigger-hazard` | Manager Only | JSON: `{"gateway_mac_address", "node_id", "level"}`. 404 when demo disabled. | `{"message": "..."}` | `200`, `401`, `403`, `404` |
 | `GET` | `/` | Browser | None | HTML dashboard (`index.html`) | `200` |
 
@@ -496,8 +548,13 @@ Radio command sent by gateway over ESP-NOW:
 | **Step 2** | Login and roles | **Done** | Users table, login, require_role, company and mine scoping. A worker token gets 403 on every superior route. Worker view strictly prevents field leakage. | 2026-11-22 |
 | **Step 2.5** | Hardening and Secret Policies | **Done** | Fail-fast secret validation at startup, centralized password policy, non-blocking handlers, data-driven route policy matrix, worker placement segregation, distinct_on query extraction. | 2026-11-22 |
 | **Step 3** | Mines, tunnels, gateways and node placement | **Done** | A brand-new Manager can go from an empty account to a placed node carrying a tunnel, entirely through the app: log in, change password, create a mine, add a tunnel, register a gateway (key shown once), see the device appear in the Unplaced queue after it posts with that key, and place it on the map with a tunnel. | 2026-11-22 |
-| **Step 4** | Watchdog and offline detection | *Not started* | ESP watchdog, sensor-fault flag, gateway heartbeat, server last-seen check, gateway-offline alert. Unplugging a node shows it offline and fires one alert. | — |
-| **Step 8 (SOS path)** | Worker reports and node SOS | *Not started* | Report form, inbox, status flow, node SOS button and SOS packet. SOS packet creates an incident and alert within a few seconds. | — |
+| **Step 4** | Watchdog and offline detection | **Done** | Pure watchdog cycle and background runner with Postgres advisory lock, alerts table with partial unique open-alert guarantees, offline threshold evaluations, gateway failure suppression, alert ack lifecycle with audit logging, and token_version session invalidation. | 2026-11-22 |
+| **Step 5** | Workers and shifts | *Not started* | Worker pages, assignments, overlap check, My hours. Double-booking is rejected. | — |
+| **Step 6** | QR check-in and headcount | *Not started* | Badges, scanner page, check events, check flags, headcount panel. Scanning in and out changes headcount; missed check-out raises flag. | — |
+| **Step 7** | Incidents and roll call | *Not started* | Manual broadcast, roster snapshot, accounted-for marking, buzzer commands to nodes. Incident lists who is unaccounted for. | — |
+| **Step 8** | Worker reports and SOS | *Not started* | Report form, inbox, status flow, node SOS button and SOS packet. Report moves through workflow; button press shows as SOS report within seconds. | — |
+| **Step 9** | Mine profile and output tracking | *Not started* | Profile fields, contacts, plan vs actual. Mine page shows all five profile groups. | — |
+| **Step 10** | Outbound notifications and extras | *Not started* | Telegram/WhatsApp outbound dispatch, PDF export, WebSocket updates. | — |
 
 ---
 
@@ -511,10 +568,50 @@ Radio command sent by gateway over ESP-NOW:
    Failed login attempts are rate limited in-memory (5 failures per username + IP sliding window over 15 minutes returning HTTP 429 with `Retry-After`). In a multi-worker production deployment, this will be backed by Redis.
 4. **Commands and SOS Alerting**:
    Ingest parses `sos_active` and returns an empty response body without dispatching commands or triggering external webhooks (slated for later steps).
+5. **In-App Alerting Scope**:
+   In Step 4, alerts are presented in-dashboard and logged in database tables. Outbound dispatches (Telegram, WhatsApp, cellular SMS, audio broadcasts) are scheduled for Step 10.
+6. **No Gateway Heartbeat in Frozen Firmware**:
+   Because gateway firmware packets without nodes are not implemented in the frozen firmware struct, a gateway's `last_seen_at` reflects the arrival of its latest forwarded node packet. On quiet tunnels with no active placed nodes transmitting, a gateway could be marked offline unless periodic node transmissions occur or firmware sends status packets.
+
+### 11.1. Firmware TODO (Owner)
+The following firmware features from Step 4 require modifying packet types or fields, which are frozen by design in this repository:
+- **Node Heartbeat Timing**: Keep node transmission interval <= 10s (or <= 30s) so the offline threshold has at least 3 missed packets margin.
+- **Gateway Heartbeats**: ESP32 gateway must transmit a periodic keepalive status packet over HTTP even when no child nodes are transmitting, preventing false gateway-offline timeouts on idle tunnels.
+- **ESP Task Watchdog & Sensor-Fault Flag**: Requires additional bit flags in the node telemetry packet payload.
+- **X-Gateway-Key Header**: Ensure physical ESP32 gateway firmware transmits the secret provisioned `X-Gateway-Key` HTTP header with all payload ingest requests.
 
 ---
 
 ## 12. Changelog
+
+### 2026-11-22 - Step 4: Offline Detection, Watchdog Runner, Alerts, and Token Invalidation
+- **Database Migration (`e252124b61df`)**:
+  - Added `users.token_version` (`Integer`, nullable=False, server_default=`0`) for instantaneous cryptographic session invalidation.
+  - Created `alerts` table with `id`, `company_id`, `mine_id`, `gateway_id`, `node_id`, `kind`, `title`, `opened_at`, `resolved_at`, `acknowledged_by`, `acknowledged_at`.
+  - Added CHECK constraints: `ck_alerts_kind` (`node_offline`, `gateway_offline`) and `ck_alerts_kind_node`.
+  - Added PostgreSQL partial unique indexes: `uq_alerts_open_node` on `(node_id) WHERE kind = 'node_offline' AND resolved_at IS NULL` and `uq_alerts_open_gateway` on `(gateway_id) WHERE kind = 'gateway_offline' AND resolved_at IS NULL`.
+  - Added compound index `ix_alerts_mine_id_opened_at` on `(mine_id, opened_at DESC)`.
+  - Verified `alembic downgrade -1` and `alembic upgrade head` succeed with zero drift on `alembic check`.
+- **Session Invalidation (Phase A Fix)**:
+  - Added `tv` claim to JWT session tokens matching `users.token_version`.
+  - `get_current_user` rejects (`401 Unauthorized`) any token whose `tv` does not match the user's current database `token_version`.
+  - Increments `token_version` on password changes (`POST /api/auth/change-password`), administrative password resets (`PATCH /api/users/{id}`), and user deactivations (`DELETE /api/users/{id}`).
+  - Password change reissues a fresh cookie with the incremented `tv` so caller remains smoothly authenticated.
+- **Connectivity Single Source of Truth**:
+  - Created `services/connectivity.py` with `node_is_online` and `gateway_is_online`.
+  - Unified all online/offline state checks across serializers and routers (`node_serializer.py`, `routers/gateways.py`, `routers/mines.py`).
+  - Added validated configuration settings in `app/config.py`: `NODE_OFFLINE_AFTER_S` (default 35s), `GATEWAY_OFFLINE_AFTER_S` (default 60s), `WATCHDOG_INTERVAL_S` (default 30s), `WATCHDOG_ENABLED` (default true).
+- **Watchdog Engine & Advisory Lock Runner**:
+  - Built pure cycle function `run_watchdog_cycle(db, now)` in `services/watchdog_service.py` taking a database session and timestamp.
+  - Evaluates active, seen gateways only; dead gateway suppresses node checks and auto-resolves open child node alerts; online gateway resolves gateway alert and evaluates only placed nodes (`is_placed(node)`).
+  - Handles concurrent alert insertion races gracefully by catching `IntegrityError` on savepoint flushes.
+  - Built `WatchdogRunner` in `app/watchdog_runner.py` with daemon thread, PostgreSQL transaction advisory lock `pg_try_advisory_xact_lock(8392104)`, and startup grace period delay (`NODE_OFFLINE_AFTER_S`). Wired into FastAPI lifespan hooks in `app/main.py`.
+- **Alert Endpoints & Superior Console**:
+  - Added `GET /api/alerts?status=open|all&mine_id=` scoped to user's permitted mines (superiors only, workers get 403).
+  - Added `POST /api/alerts/{id}/ack` for idempotent acknowledgment recording audit action `"alert.acknowledge"`.
+  - Frontend (`app.js`): Superiors poll `/api/alerts` every 10s. Displays top banner `⚠️ X active alerts [View]` when unacknowledged alerts exist. Offline nodes greyed out on map and inventory chips. Workers see no alert UI.
+- **Automated Verification**:
+  - Added `tests/test_step4_watchdog.py` with 14 comprehensive test cases covering connectivity boundary conditions, deduplication, auto-resolution, unplaced node immunity, gateway offline suppression, partial unique index concurrency, startup grace period, scoping, ack audit logs, session revocation, and the full end-to-end Done-When journey. All 59 tests passing.
 
 ### 2026-11-22 - Step 3: Mines, Tunnels, Gateways, Node Placement, and Audit Logging
 - **Database Migration (`e95f3b721a01`)**:
@@ -534,7 +631,7 @@ Radio command sent by gateway over ESP-NOW:
   - Replaced legacy placements endpoints with `PATCH /api/nodes/{id}/placement` (enforcing same-mine validation) and `DELETE /api/nodes/{id}/placement`.
   - Added optional `?mine_id=` query filter across `/api/nodes`, `/api/gateways`, `/api/placements`, and `/api/unplaced`.
 - **Atomic Audit Logging**:
-  - Built `services/audit.py` recording audit rows atomically for all state mutations (`mine.create`, `tunnel.create`, `gateway.register`, `gateway.update`, `gateway.rotate_key`, `gateway.delete`, `node.place`, `node.unplace`, `user.create`, `user.update`, `user.delete`, `user.change_password`).
+  - Built `services/audit.py` recording audit rows atomically for all state mutations (`mine.create`, `tunnel.create`, `gateway.register`, `gateway.update`, `gateway.rotate_key`, `gateway.disable`, `node.place`, `node.unplace`, `user.create`, `user.update`, `user.deactivate`, `auth.password_change`).
   - Enforced automatic sanitization stripping passwords, tokens, and keys from audit details.
 - **Frontend Enhancements**:
   - Created 4-step Manager onboarding wizard for accounts with empty mine scopes.
@@ -545,10 +642,6 @@ Radio command sent by gateway over ESP-NOW:
   - Scoped UI controls dynamically based on worker vs superior roles.
 - **Automated Verification**:
   - Added `tests/test_step3_phase_b.py` with 5 comprehensive test suites covering ingest authentication matrices, key safety, placement check constraints, cross-mine validation, audit logging atomicity, and the complete Done-When manager lifecycle journey. All 42 tests passing.
-
----
-
-## 12. Changelog
 
 ### 2026-11-22 - Step 2.5: Hardening
 - **Secret & Password Policy Hardening**:

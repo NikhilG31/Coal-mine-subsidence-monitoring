@@ -56,7 +56,6 @@ POLICY_TABLE = {
     ("GET", "/api/mines/{mine_id}/tunnels"): "any_role_scoped",
     ("GET", "/api/nodes"): "any_role_scoped",
     ("GET", "/api/placements"): "any_role_scoped",
-    ("GET", "/api/demo/status"): "any_role_scoped",
     # SUPERIORS ONLY (scoped to allowed mines)
     ("GET", "/api/gateways"): "superiors_scoped",
     ("GET", "/api/history"): "superiors_scoped",
@@ -84,6 +83,7 @@ POLICY_TABLE = {
     ("POST", "/api/demo/seed"): "manager_only",
     ("POST", "/api/demo/step"): "manager_only",
     ("POST", "/api/demo/toggle-live"): "manager_only",
+    ("GET", "/api/demo/status"): "manager_only",
     ("POST", "/api/demo/trigger-hazard"): "manager_only",
 }
 

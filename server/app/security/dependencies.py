@@ -12,7 +12,11 @@ from app.database import get_db
 from app.models.mine import Mine
 from app.models.user import User, UserMine
 from app.security.roles import ROLE_MANAGER, SUPERIOR_ROLES, role_group
-from app.security.tokens import COOKIE_NAME, decode_session_token
+from app.security.tokens import (
+    COOKIE_NAME,
+    decode_session_token,
+    decode_session_token_payload,
+)
 
 security_logger = logging.getLogger("security")
 security_logger.setLevel(logging.INFO)
@@ -36,8 +40,16 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
             detail="Authentication required: session cookie missing",
         )
 
-    user_id = decode_session_token(token)
-    if not user_id:
+    payload = decode_session_token_payload(token)
+    if not payload or "sub" not in payload:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required: invalid or expired session",
+        )
+
+    try:
+        user_id = int(payload["sub"])
+    except (ValueError, TypeError):
         raise HTTPException(
             status_code=401,
             detail="Authentication required: invalid or expired session",
@@ -48,6 +60,16 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
         raise HTTPException(
             status_code=401,
             detail="Authentication required: account is inactive or not found",
+        )
+
+    # Session invalidation (A3): reject if token tv != user's token_version
+    # Tokens issued without tv claim are treated as tv=0
+    token_tv = int(payload.get("tv", 0))
+    user_tv = int(getattr(user, "token_version", 0))
+    if token_tv != user_tv:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required: session has been invalidated",
         )
 
     # Force password change gate

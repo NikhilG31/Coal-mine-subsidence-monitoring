@@ -19,29 +19,40 @@ from app.config import (
 COOKIE_NAME: str = "session"
 
 
-def create_session_token(user_id: int) -> str:
-    """Creates a signed HS256 JWT session token with sub, iat, and exp claims."""
+def create_session_token(user_id: int, token_version: int = 0) -> str:
+    """Creates a signed HS256 JWT session token with sub, tv, iat, and exp claims."""
     validate_jwt_secret()
     now_ts = int(time.time())
     exp_ts = now_ts + (SESSION_HOURS * 3600)
     payload = {
         "sub": str(user_id),
+        "tv": int(token_version),
         "iat": now_ts,
         "exp": exp_ts,
     }
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
 
-def decode_session_token(token: str) -> Optional[int]:
-    """Decodes and validates a session JWT token. Returns user_id if valid, else None."""
+def decode_session_token_payload(token: str) -> Optional[dict]:
+    """Decodes and validates a session JWT token. Returns payload dict if valid, else None."""
     validate_jwt_secret()
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-        sub = payload.get("sub")
-        if sub is None:
-            return None
-        return int(sub)
+        return jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
     except (jwt.PyJWTError, ValueError):
+        return None
+
+
+def decode_session_token(token: str) -> Optional[int]:
+    """Decodes and validates a session JWT token. Returns user_id if valid, else None."""
+    payload = decode_session_token_payload(token)
+    if not payload:
+        return None
+    sub = payload.get("sub")
+    if sub is None:
+        return None
+    try:
+        return int(sub)
+    except (ValueError, TypeError):
         return None
 
 

@@ -31,7 +31,22 @@ elif _db_url_clean.startswith("postgresql://") and not _db_url_clean.startswith(
 DATABASE_URL: str = _db_url_clean
 
 # Telemetry and Silence Monitoring Thresholds
-OFFLINE_AFTER_S: int = int(os.getenv("OFFLINE_AFTER_S", "35"))
+_offline_raw = os.getenv("NODE_OFFLINE_AFTER_S") or os.getenv("OFFLINE_AFTER_S", "35")
+NODE_OFFLINE_AFTER_S: int = int(_offline_raw)
+OFFLINE_AFTER_S: int = NODE_OFFLINE_AFTER_S  # Alias for backward compatibility
+
+GATEWAY_OFFLINE_AFTER_S: int = int(os.getenv("GATEWAY_OFFLINE_AFTER_S", "60"))
+WATCHDOG_INTERVAL_S: int = int(os.getenv("WATCHDOG_INTERVAL_S", "30"))
+WATCHDOG_ENABLED: bool = os.getenv("WATCHDOG_ENABLED", "true").lower() in ("true", "1", "yes")
+
+if NODE_OFFLINE_AFTER_S <= 0:
+    raise ValueError("NODE_OFFLINE_AFTER_S must be positive")
+if GATEWAY_OFFLINE_AFTER_S <= 0:
+    raise ValueError("GATEWAY_OFFLINE_AFTER_S must be positive")
+if WATCHDOG_INTERVAL_S <= 0:
+    raise ValueError("WATCHDOG_INTERVAL_S must be positive")
+if GATEWAY_OFFLINE_AFTER_S < NODE_OFFLINE_AFTER_S:
+    raise ValueError("GATEWAY_OFFLINE_AFTER_S must be greater than or equal to NODE_OFFLINE_AFTER_S")
 
 # Feature Flags
 ENABLE_DEMO_ROUTES: bool = os.getenv("ENABLE_DEMO_ROUTES", "false").lower() in ("true", "1", "yes")

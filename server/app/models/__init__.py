@@ -12,6 +12,7 @@ from app.models.gateway import Gateway
 from app.models.node import Node
 from app.models.reading import Reading
 from app.models.audit_log import AuditLog
+from app.models.alert import Alert
 
 __all__ = [
     "Base",
@@ -25,4 +26,5 @@ __all__ = [
     "Node",
     "Reading",
     "AuditLog",
+    "Alert",
 ]

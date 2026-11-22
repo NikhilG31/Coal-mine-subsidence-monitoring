@@ -513,3 +513,138 @@ def test_done_when_manager_journey(client, db):
     assert len(gateways_res) == 1
     assert gateways_res[0]["placed_nodes"] == 1
     assert gateways_res[0]["node_count"] == 1
+
+
+def test_a1_gateway_delete_is_disable(client, db):
+    """A1: DELETE /api/gateways/{id} disables (active=false), never hard deletes."""
+    comp = Company(name="GW Disable Corp", name_normalized="gw disable corp")
+    db.add(comp)
+    db.flush()
+
+    mgr = User(
+        company_id=comp.id,
+        username="gw_disable_mgr",
+        password_hash=hash_password("ValidPassword123!"),
+        full_name="GW Disable Manager",
+        role=ROLE_MANAGER,
+        active=True,
+    )
+    db.add(mgr)
+    db.flush()
+
+    mine = Mine(company_id=comp.id, name="Disable Test Mine", status="active", method="underground")
+    db.add(mine)
+    db.flush()
+
+    raw_key = generate_key()
+    gw = Gateway(
+        mac="EE:11:22:33:44:55",
+        mine_id=mine.id,
+        name="Gateway To Disable",
+        api_key_hash=hash_key(raw_key),
+        active=True,
+    )
+    db.add(gw)
+    db.flush()
+
+    # Even with nodes present, DELETE must succeed (disable) rather than 409
+    node = Node(gateway_id=gw.id, node_no=1, status="normal")
+    db.add(node)
+    db.commit()
+
+    client.cookies.set(COOKIE_NAME, create_session_token(mgr.id))
+
+    # DELETE /api/gateways/{id}
+    del_res = client.delete(f"/api/gateways/{gw.id}")
+    assert del_res.status_code == 200
+    gw_obj = del_res.json()
+    assert gw_obj["id"] == gw.id
+    assert gw_obj["active"] is False
+    assert gw_obj["name"] == "Gateway To Disable"
+    assert "api_key" not in gw_obj
+    assert "api_key_hash" not in gw_obj
+
+    # Row is still in database with active=False
+    db.refresh(gw)
+    assert gw.active is False
+
+    # Audit row has action 'gateway.disable'
+    last_audit = db.query(AuditLog).order_by(AuditLog.id.desc()).first()
+    assert last_audit.action == "gateway.disable"
+    assert last_audit.entity == "gateway"
+    assert last_audit.entity_id == gw.id
+
+    # PATCH {active: true} re-enables and logs gateway.update
+    patch_res = client.patch(f"/api/gateways/{gw.id}", json={"active": True})
+    assert patch_res.status_code == 200
+    assert patch_res.json()["active"] is True
+    db.refresh(gw)
+    assert gw.active is True
+    last_audit = db.query(AuditLog).order_by(AuditLog.id.desc()).first()
+    assert last_audit.action == "gateway.update"
+
+    # PATCH {active: false} disables and logs gateway.disable
+    patch_res2 = client.patch(f"/api/gateways/{gw.id}", json={"active": False})
+    assert patch_res2.status_code == 200
+    assert patch_res2.json()["active"] is False
+    db.refresh(gw)
+    assert gw.active is False
+    last_audit = db.query(AuditLog).order_by(AuditLog.id.desc()).first()
+    assert last_audit.action == "gateway.disable"
+
+
+def test_a2_login_response_no_token_in_body(client, db):
+    """A2: POST /api/auth/login must NOT return the JWT in the body."""
+    comp = Company(name="Login Test Corp", name_normalized="login test corp")
+    db.add(comp)
+    db.flush()
+
+    user = User(
+        company_id=comp.id,
+        username="login_test_user",
+        password_hash=hash_password("ValidPassword123!"),
+        full_name="Login Test User",
+        role=ROLE_MANAGER,
+        active=True,
+    )
+    db.add(user)
+    db.commit()
+
+    res = client.post("/api/auth/login", json={"username": "login_test_user", "password": "ValidPassword123!"})
+    assert res.status_code == 200
+    body = res.json()
+    assert "token" not in body
+    assert "user" in body
+    assert "force_pw_change" in body
+    assert COOKIE_NAME in res.cookies
+
+
+def test_a5_demo_status_is_manager_only(client, db):
+    """A5: GET /api/demo/status is Manager-only (403 for workers and non-manager superiors)."""
+    comp = Company(name="Demo Status Corp", name_normalized="demo status corp")
+    db.add(comp)
+    db.flush()
+
+    mgr = User(company_id=comp.id, username="demo_mgr", password_hash=hash_password("ValidPassword123!"), full_name="Mgr", role="manager", active=True)
+    eng = User(company_id=comp.id, username="demo_eng", password_hash=hash_password("ValidPassword123!"), full_name="Eng", role="engineer", active=True)
+    miner = User(company_id=comp.id, username="demo_miner", password_hash=hash_password("ValidPassword123!"), full_name="Miner", role="miner", active=True)
+    db.add_all([mgr, eng, miner])
+    db.commit()
+
+    # Anonymous -> 401
+    client.cookies.clear()
+    assert client.get("/api/demo/status").status_code == 401
+
+    # Miner -> 403
+    client.cookies.set(COOKIE_NAME, create_session_token(miner.id))
+    assert client.get("/api/demo/status").status_code == 403
+
+    # Engineer -> 403
+    client.cookies.set(COOKIE_NAME, create_session_token(eng.id))
+    assert client.get("/api/demo/status").status_code == 403
+
+    # Manager -> 200
+    client.cookies.set(COOKIE_NAME, create_session_token(mgr.id))
+    res = client.get("/api/demo/status")
+    assert res.status_code == 200
+    assert "running" in res.json()

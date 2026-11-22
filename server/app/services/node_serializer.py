@@ -3,9 +3,11 @@
 Owns formatting Node and Reading model records into superior and worker view shapes.
 Must NOT execute database queries or import FastAPI routing constructs.
 """
+import datetime
 from typing import Any, Dict, Optional
 from app.models.node import Node
 from app.models.reading import Reading
+from app.services.connectivity import node_is_online
 from app.services.hazard_classifier import (
     LEVEL_COLORS,
     LEVEL_NORMAL,
@@ -24,11 +26,12 @@ def serialize_node(
     mac = node.gateway.mac if node.gateway else "UNKNOWN"
     gw_name = node.gateway.name if node.gateway else "Gateway"
 
+    now_dt = datetime.datetime.fromtimestamp(now_ts, tz=datetime.timezone.utc)
     if node.last_seen_at:
         age_s = round(now_ts - node.last_seen_at.timestamp(), 1)
     else:
         age_s = 999.0
-    online = age_s <= offline_after_s
+    online = node_is_online(node.last_seen_at, now_dt)
 
     placed = is_placed(node)
     if node.tunnel:

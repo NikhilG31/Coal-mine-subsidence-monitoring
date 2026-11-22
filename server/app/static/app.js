@@ -131,12 +131,16 @@ function resetIndiaMap() {
 }
 
 function createNeoMarkerHtml(node) {
-  const level = (node.status || "normal").toLowerCase();
-  const isLowBatt = node.low_battery || (node.battery_percentage <= 20.0);
-  const battBadge = isLowBatt ? `<div class="marker-battery-low">🪫 ${node.battery_percentage.toFixed(0)}%</div>` : "";
+  const isOffline = node.online === false;
+  const level = isOffline ? "offline" : (node.status || "normal").toLowerCase();
+  const isLowBatt = !isOffline && (node.low_battery || (node.battery_percentage <= 20.0));
+  const battBadge = isOffline
+    ? `<div class="marker-battery-low" style="background:#4b5563; color:#fff; border-color:#000;">OFFLINE</div>`
+    : (isLowBatt ? `<div class="marker-battery-low">🪫 ${node.battery_percentage.toFixed(0)}%</div>` : "");
+  const containerStyle = isOffline ? 'filter: grayscale(100%); opacity: 0.65;' : '';
 
   return `
-    <div class="neo-marker-container">
+    <div class="neo-marker-container" style="${containerStyle}">
       ${battBadge}
       <div class="neo-marker-pin ${level}">
         <span>N${node.node_id}</span>
@@ -471,9 +475,10 @@ async function openInspectorDrawer(node) {
   document.getElementById("drawerNodeTitle").textContent = titleText;
   document.getElementById("drawerGatewayMac").textContent = `GW MAC: ${node.gateway_mac_address}`;
 
-  const status = (node.status || "normal").toLowerCase();
+  const isOffline = node.online === false;
+  const status = isOffline ? "offline" : (node.status || "normal").toLowerCase();
   const stamp = document.getElementById("drawerStatusStamp");
-  stamp.textContent = `STATUS: ${status.toUpperCase()}`;
+  stamp.textContent = isOffline ? "STATUS: OFFLINE" : `STATUS: ${status.toUpperCase()}`;
   stamp.className = `status-stamp ${status}`;
 
   // Battery gauge
@@ -610,13 +615,15 @@ function renderGatewaysTree(gateways) {
         </div>
         <div class="nodes-mini-grid">
           ${gw.nodes.map(n => {
-            const nLevel = (n.status || "normal").toLowerCase();
+            const isOffline = n.online === false;
+            const nLevel = isOffline ? "offline" : (n.status || "normal").toLowerCase();
             const isSel = selectedNode && selectedNode.gateway_mac_address === n.gateway_mac_address && selectedNode.node_id === n.node_id;
+            const chipStyle = isOffline ? 'opacity: 0.6; filter: grayscale(100%); background: #e5e7eb;' : '';
             return `
-              <div class="node-chip ${isSel ? 'selected' : ''}" onclick="openInspectorDrawer(${JSON.stringify(n).replace(/"/g, '&quot;')})">
+              <div class="node-chip ${isSel ? 'selected' : ''} ${isOffline ? 'offline' : ''}" style="${chipStyle}" onclick="openInspectorDrawer(${JSON.stringify(n).replace(/"/g, '&quot;')})">
                 <div class="node-chip-header">
-                  <span class="node-chip-id">N#${n.node_id}</span>
-                  <span class="node-chip-status" style="background:${n.color};"></span>
+                  <span class="node-chip-id">N#${n.node_id}${isOffline ? ' (OFFLINE)' : ''}</span>
+                  <span class="node-chip-status" style="background:${isOffline ? '#6b7280' : n.color};"></span>
                 </div>
                 <div class="node-chip-val">Tilt: ${Math.max(Math.abs(n.tilt_x), Math.abs(n.tilt_y)).toFixed(2)}°</div>
                 <div class="node-chip-val">Vib: ${n.vibration_magnitude.toFixed(3)}g</div>
@@ -634,36 +641,73 @@ function renderGatewaysTree(gateways) {
 // ALERTS SYSTEM & DEDUPLICATION DISPLAY
 // ==========================================
 
+let alertsPollTimer = null;
+
 async function fetchAlerts() {
+  const isSuperior = currentUser && ["manager", "safety_officer", "engineer"].includes(currentUser.role);
+  const banner = document.getElementById("criticalAlertBanner");
+  const alertsBox = document.getElementById("alertsTableBody")?.closest(".zine-box");
+
+  if (!isSuperior) {
+    if (banner) banner.style.display = "none";
+    if (alertsBox) alertsBox.style.display = "none";
+    return;
+  }
+
+  if (alertsBox) alertsBox.style.display = "block";
+
   try {
-    const data = await apiFetch("/api/alerts?limit=20");
+    const data = await apiFetch("/api/alerts?status=open");
     const alerts = data.alerts || [];
     renderAlertsTable(alerts);
+
+    const unacked = alerts.filter(a => !a.acknowledged_at && !a.resolved_at);
+    if (banner) {
+      if (unacked.length > 0) {
+        banner.style.display = "block";
+        const bannerText = document.getElementById("alertBannerText");
+        if (bannerText) {
+          bannerText.innerHTML = `⚠️ ${unacked.length} active alert${unacked.length > 1 ? 's' : ''} <button class="neo-btn btn-small" style="background:#ffffff; color:#000; margin-left:8px;" onclick="scrollToAlerts()">View</button>`;
+        }
+      } else {
+        banner.style.display = "none";
+      }
+    }
   } catch (err) {
-    console.error("Alerts fetch error:", err);
+    console.warn("Alerts fetch error:", err);
+  }
+}
+
+function scrollToAlerts() {
+  const alertsBox = document.getElementById("alertsTableBody")?.closest(".zine-box");
+  if (alertsBox) {
+    alertsBox.scrollIntoView({ behavior: "smooth" });
   }
 }
 
 function renderAlertsTable(alerts) {
   const tbody = document.getElementById("alertsTableBody");
+  if (!tbody) return;
   if (!alerts.length) {
-    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--ink-3);">No active hazard alerts recorded.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--ink-3);">No active hazard or connectivity alerts.</td></tr>`;
     return;
   }
 
   tbody.innerHTML = alerts.map(a => {
-    const level = (a.danger_level || "normal").toLowerCase();
-    const ackBtn = a.acknowledged 
-      ? `<span style="color:var(--green); font-weight:700;">✓ Acked</span>` 
-      : `<button class="neo-btn btn-small" onclick="acknowledgeAlert(${a.id})">Ack</button>`;
+    const ackBtn = a.acknowledged_at 
+      ? `<span style="color:var(--green); font-weight:700;">✓ Acked by ${a.acknowledged_by_name || 'Staff'}</span>` 
+      : `<button class="neo-btn btn-small" onclick="acknowledgeAlert(${a.id})">Acknowledge</button>`;
+
+    const timeStr = a.opened_at ? new Date(a.opened_at).toLocaleTimeString() : "N/A";
+    const entityStr = a.node_id ? `Node #${a.node_id}` : `Gateway #${a.gateway_id}`;
 
     return `
       <tr>
-        <td style="white-space:nowrap;">${a.time_str}</td>
-        <td><strong>Node #${a.node_id}</strong></td>
-        <td><code>${a.gateway_mac_address}</code></td>
-        <td><span class="badge-danger-level badge-${level}">${level}</span></td>
-        <td>${a.trigger_reading}</td>
+        <td style="white-space:nowrap;">${timeStr}</td>
+        <td><strong>${entityStr}</strong></td>
+        <td><code>GW #${a.gateway_id}</code></td>
+        <td><span class="badge-danger-level badge-critical">${a.kind}</span></td>
+        <td>${a.title}</td>
         <td>${ackBtn}</td>
       </tr>
     `;
@@ -673,7 +717,7 @@ function renderAlertsTable(alerts) {
 async function acknowledgeAlert(alertId) {
   try {
     await apiFetch(`/api/alerts/${alertId}/ack`, { method: "POST" });
-    fetchAlerts();
+    await fetchAlerts();
   } catch (err) {
     alert("Ack error: " + err.message);
   }
@@ -763,8 +807,12 @@ function startPolling() {
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(() => {
     fetchDashboardData();
-    fetchAlerts();
   }, 4000); // 4-second polling to capture 5-second ESP-NOW intervals
+
+  if (alertsPollTimer) clearInterval(alertsPollTimer);
+  alertsPollTimer = setInterval(() => {
+    fetchAlerts();
+  }, 10000); // 10-second polling for alerts
 }
 
 // ==========================================
@@ -858,6 +906,13 @@ function updateUserBadge(user) {
 
   const btnUnplace = document.querySelector("button[onclick='unplaceCurrentNode()']");
   if (btnUnplace) btnUnplace.style.display = isWorker ? "none" : "inline-block";
+
+  // Alerts visibility: workers do not see alert banner or list
+  const alertsCard = document.getElementById("alertsTableBody")?.closest(".zine-box");
+  if (alertsCard) alertsCard.style.display = isWorker ? "none" : "block";
+  const banner = document.getElementById("criticalAlertBanner");
+  if (isWorker && banner) banner.style.display = "none";
+  if (isSuperior) fetchAlerts();
 }
 
 function openAuthModal() {
@@ -1437,7 +1492,7 @@ async function toggleGatewayActive(gwId, currentActive) {
 }
 
 async function deleteGateway(gwId) {
-  if (!confirm("Permanently delete this unattached hardware gateway?")) {
+  if (!confirm("Disable this hardware gateway?")) {
     return;
   }
   try {
@@ -1445,6 +1500,6 @@ async function deleteGateway(gwId) {
     await loadMinesList();
     await fetchDashboardData();
   } catch (err) {
-    alert("Delete gateway failed: " + err.message);
+    alert("Disable gateway failed: " + err.message);
   }
 }

@@ -3,7 +3,7 @@
 Owns the users table and user_mines many-to-many relationship mapping permitted mines.
 Must NOT hash passwords, issue JWT tokens, or evaluate route permission policies.
 """
-from sqlalchemy import Boolean, CheckConstraint, Column, ForeignKey, Integer, String, Text, true, false
+from sqlalchemy import Boolean, CheckConstraint, Column, ForeignKey, Integer, String, Text, false, text, true
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -21,6 +21,7 @@ class User(Base):
     role = Column(String(32), nullable=False)
     active = Column(Boolean, nullable=False, default=True, server_default=true())
     force_pw_change = Column(Boolean, nullable=False, default=False, server_default=false())
+    token_version = Column(Integer, nullable=False, default=0, server_default=text("0"))
 
     __table_args__ = (
         CheckConstraint(

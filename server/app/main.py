@@ -4,6 +4,7 @@ Owns application lifecycle, router registration, CORS configuration, and static 
 Must NOT define route implementations, database schemas, or CLI handlers directly.
 """
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,10 +42,21 @@ from app.routers import (
     users,
 )
 from app.security.dependencies import PasswordChangeRequiredException
+from app.watchdog_runner import runner as watchdog_runner
 
 STATIC_DIR = Path(__file__).parent / "static"
 
-app = FastAPI(title="Coal Mine Subsidence Monitoring System")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    watchdog_runner.start()
+    try:
+        yield
+    finally:
+        watchdog_runner.stop()
+
+
+app = FastAPI(title="Coal Mine Subsidence Monitoring System", lifespan=lifespan)
 
 # Spec B8: Remove allow_origins=["*"] with allow_credentials=True.
 # Default is same-origin only. Use explicit origins from CORS_ORIGINS when provided.

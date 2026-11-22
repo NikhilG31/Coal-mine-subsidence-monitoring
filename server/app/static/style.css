@@ -447,6 +447,17 @@ button:active, .btn-submit:active, .btn-action:active, .neo-btn:active {
   background: var(--blood);
   animation: markerPulsate 1s infinite alternate;
 }
+.neo-marker-pin.offline {
+  background: #6b7280;
+  color: #ffffff;
+  opacity: 0.65;
+  filter: grayscale(100%);
+}
+.node-chip.offline {
+  background: #e5e7eb;
+  opacity: 0.65;
+  filter: grayscale(100%);
+}
 
 @keyframes markerPulsate {
   0% { box-shadow: 3px 3px 0px var(--ink); }

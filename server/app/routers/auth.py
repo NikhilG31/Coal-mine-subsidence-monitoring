@@ -102,7 +102,7 @@ def api_login(
         db.commit()
 
     # Issue JWT in HttpOnly cookie
-    token = create_session_token(user.id)
+    token = create_session_token(user.id, token_version=getattr(user, "token_version", 0))
     set_session_cookie(response, token)
 
     security_logger.info(
@@ -191,18 +191,20 @@ def api_change_password(
 
     user.password_hash = hash_password(new_pw)
     user.force_pw_change = False
+    if hasattr(user, "token_version"):
+        user.token_version = (getattr(user, "token_version", 0) or 0) + 1
     record_audit(
         db,
         user,
-        action="user.change_password",
+        action="auth.password_change",
         entity="user",
         entity_id=user.id,
         detail={},
     )
     db.commit()
 
-    # Reissue session cookie
-    new_token = create_session_token(user.id)
+    # Reissue session cookie with new token_version so caller stays logged in
+    new_token = create_session_token(user.id, token_version=getattr(user, "token_version", 0))
     set_session_cookie(response, new_token)
 
     security_logger.info("Password changed successfully for user '%s' (id=%d)", user.username, user.id)

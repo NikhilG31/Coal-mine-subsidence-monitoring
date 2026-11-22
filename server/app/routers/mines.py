@@ -27,6 +27,7 @@ from app.security.dependencies import (
 )
 from app.security.roles import ROLE_MANAGER
 from app.services.audit import record_audit
+from app.services.connectivity import gateway_is_online
 from app.services.gateway_keys import generate_key, hash_key
 
 router = APIRouter(tags=["mines"])
@@ -321,10 +322,7 @@ def api_get_mine_gateways(
     now = datetime.datetime.now(datetime.timezone.utc)
     out = []
     for g in gateways:
-        online = False
-        if g.last_seen_at:
-            delta_s = (now - g.last_seen_at).total_seconds()
-            online = delta_s <= OFFLINE_AFTER_S
+        online = gateway_is_online(g.last_seen_at, now)
 
         out.append(
             {
