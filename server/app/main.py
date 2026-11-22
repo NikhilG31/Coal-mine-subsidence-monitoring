@@ -3,13 +3,28 @@
 Owns application lifecycle, router registration, CORS configuration, and static file mounting.
 Must NOT define route implementations, database schemas, or CLI handlers directly.
 """
+import logging
 from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.config import CORS_ORIGINS
+from app.config import (
+    ALLOW_UNKEYED_INGEST,
+    CORS_ORIGINS,
+    validate_jwt_secret,
+)
+
+# Enforce fail-fast secret validation at startup
+validate_jwt_secret()
+
+if ALLOW_UNKEYED_INGEST:
+    logging.getLogger("uvicorn.error").warning(
+        "*** CRITICAL SECURITY WARNING: ALLOW_UNKEYED_INGEST is ENABLED! "
+        "Gateways may ingest telemetry without authentication keys. Do NOT use in production! ***"
+    )
+
 from app.routers import (
     alerts,
     auth,
@@ -19,9 +34,11 @@ from app.routers import (
     health,
     history,
     ingest,
+    mines,
     nodes,
     notifications,
     placements,
+    users,
 )
 from app.security.dependencies import PasswordChangeRequiredException
 
@@ -55,6 +72,7 @@ async def password_change_required_handler(request: Request, exc: PasswordChange
 
 # Register Area Routers
 app.include_router(ingest.router)
+app.include_router(mines.router)
 app.include_router(nodes.router)
 app.include_router(gateways.router)
 app.include_router(history.router)
@@ -65,6 +83,7 @@ app.include_router(alerts.router)
 app.include_router(notifications.router)
 app.include_router(demo.router)
 app.include_router(auth.router)
+app.include_router(users.router)
 
 
 @app.get("/")

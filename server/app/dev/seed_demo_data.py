@@ -3,35 +3,63 @@
 Owns seeding sample mine sites and gateways matching simulator MAC addresses for local testing.
 Must NOT execute in production environments or create user credentials.
 """
+import argparse
+import sys
+from typing import Optional
+
+from app.config import validate_demo_gateway_key
 from app.database import SessionLocal
-from app.models.company import Company, normalize_company_name
+from app.models.company import Company
 from app.models.gateway import Gateway
 from app.models.mine import Mine
 from app.models.tunnel import Tunnel
+from app.services.gateway_keys import hash_key
 
 
-def seed_demo_data() -> None:
-    """Creates sample company, mine, tunnel, and gateways for development testing."""
+def seed_demo_data(company_name: Optional[str] = None) -> None:
+    """Creates sample mine, tunnel, and gateways for development testing."""
+    try:
+        demo_key = validate_demo_gateway_key()
+    except ValueError as e:
+        print(f"[seed_demo_data] ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    key_hash = hash_key(demo_key)
     db = SessionLocal()
     try:
-        # 1. Resolve or create company
-        company = db.query(Company).first()
-        if not company:
-            company = Company(
-                name="Bharat Coking Coal Limited",
-                name_normalized=normalize_company_name("Bharat Coking Coal Limited"),
-            )
-            db.add(company)
-            db.flush()
-            print(f"[seed_demo_data] Created fallback company: {company.name}")
+        # 1. Resolve company
+        if company_name:
+            company = db.query(Company).filter(Company.name == company_name.strip()).first()
+            if not company:
+                print(f"[seed_demo_data] ERROR: Company '{company_name}' not found.", file=sys.stderr)
+                sys.exit(1)
         else:
-            print(f"[seed_demo_data] Using company: {company.name} (id={company.id})")
+            companies = db.query(Company).all()
+            if len(companies) == 0:
+                print(
+                    "[seed_demo_data] ERROR: No companies found in database. Please run seed_manager first.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            elif len(companies) > 1:
+                print(
+                    "[seed_demo_data] ERROR: Multiple companies exist. Please specify --company.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            company = companies[0]
+
+        print(f"[seed_demo_data] Using company: {company.name} (id={company.id})")
 
         # 2. Mine
-        mine = db.query(Mine).filter(
-            Mine.company_id == company.id,
-            Mine.name == "Jharia Seam #11 Colliery",
-        ).first()
+        mine = (
+            db.query(Mine)
+            .filter(
+                Mine.company_id == company.id,
+                Mine.name == "Jharia Seam #11 Colliery",
+            )
+            .first()
+        )
         if not mine:
             mine = Mine(
                 company_id=company.id,
@@ -51,10 +79,14 @@ def seed_demo_data() -> None:
             print(f"[seed_demo_data] Dev mine already exists: {mine.name} (id={mine.id})")
 
         # 3. Tunnel
-        tunnel = db.query(Tunnel).filter(
-            Tunnel.mine_id == mine.id,
-            Tunnel.code == "TUNNEL-11",
-        ).first()
+        tunnel = (
+            db.query(Tunnel)
+            .filter(
+                Tunnel.mine_id == mine.id,
+                Tunnel.code == "TUNNEL-11",
+            )
+            .first()
+        )
         if not tunnel:
             tunnel = Tunnel(
                 mine_id=mine.id,
@@ -82,14 +114,16 @@ def seed_demo_data() -> None:
                     mac=mac,
                     mine_id=mine.id,
                     name=name,
-                    api_key_hash="placeholder_dev_api_key_hash",
+                    api_key_hash=key_hash,
                     active=True,
                 )
                 db.add(gw)
                 db.flush()
                 print(f"[seed_demo_data] Created dev gateway: {name} ({mac})")
             else:
-                print(f"[seed_demo_data] Dev gateway already exists: {name} ({mac})")
+                gw.api_key_hash = key_hash
+                gw.active = True
+                print(f"[seed_demo_data] Updated dev gateway with valid hash: {name} ({mac})")
 
         db.commit()
         print("[seed_demo_data] Dev seed completed successfully.")
@@ -101,6 +135,12 @@ def seed_demo_data() -> None:
         db.close()
 
 
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Seed development mine, tunnel, and gateway dataset")
+    parser.add_argument("--company", type=str, default=None, help="Target company name")
+    args = parser.parse_args()
+    seed_demo_data(company_name=args.company)
+
+
 if __name__ == "__main__":
-    print("--- Running seed_demo_data.py ---")
-    seed_demo_data()
+    main()

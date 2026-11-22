@@ -11,6 +11,7 @@ from app.models.user import User, UserMine
 from app.models.gateway import Gateway
 from app.models.node import Node
 from app.models.reading import Reading
+from app.models.audit_log import AuditLog
 
 __all__ = [
     "Base",
@@ -23,4 +24,5 @@ __all__ = [
     "Gateway",
     "Node",
     "Reading",
+    "AuditLog",
 ]

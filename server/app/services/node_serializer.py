@@ -11,6 +11,7 @@ from app.services.hazard_classifier import (
     LEVEL_NORMAL,
     get_hazard_details,
 )
+from app.services.node_placement import is_placed
 
 
 def serialize_node(
@@ -29,7 +30,7 @@ def serialize_node(
         age_s = 999.0
     online = age_s <= offline_after_s
 
-    placed = node.lat is not None and node.lon is not None
+    placed = is_placed(node)
     if node.tunnel:
         loc_name = node.tunnel.name
     elif placed:
@@ -65,9 +66,12 @@ def serialize_node(
     )
 
     return {
+        "id": node.id,
+        "mine_id": node.gateway.mine_id if node.gateway else None,
         "gateway_mac_address": mac,
         "gateway": gw_name,
         "node_id": node.node_no,
+        "tunnel_id": node.tunnel_id,
         "counter": cnt,
         "tilt_x": tx,
         "tilt_y": ty,

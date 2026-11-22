@@ -42,3 +42,33 @@ def test_seed_manager_idempotency_and_reset(db):
     assert verify_password(new_unapplied_pass, user.password_hash)
     assert user.role == "manager"
     assert user.company_id == comp.id
+
+
+def test_seed_manager_rejects_bad_secrets(db):
+    """A1: seed_manager rejects CHANGE_ME, short passwords, or password == username."""
+    import pytest
+
+    # CHANGE_ME in company name
+    with pytest.raises(SystemExit) as exc:
+        seed_manager("Company_CHANGE_ME", "valid_user", "ValidPassword@2026", "Manager")
+    assert "cannot contain 'CHANGE_ME'" in str(exc.value)
+
+    # CHANGE_ME in username
+    with pytest.raises(SystemExit) as exc:
+        seed_manager("Valid Company", "user_change_me", "ValidPassword@2026", "Manager")
+    assert "cannot contain 'CHANGE_ME'" in str(exc.value)
+
+    # Short password (< 10 chars)
+    with pytest.raises(SystemExit) as exc:
+        seed_manager("Valid Company", "valid_user", "Short1!", "Manager")
+    assert "at least 10 characters" in str(exc.value)
+
+    # Password == username
+    with pytest.raises(SystemExit) as exc:
+        seed_manager("Valid Company", "valid_user", "valid_user", "Manager")
+    assert "cannot match username" in str(exc.value)
+
+    # CHANGE_ME in password
+    with pytest.raises(SystemExit) as exc:
+        seed_manager("Valid Company", "valid_user", "CHANGE_ME_PASSWORD_2026", "Manager")
+    assert "cannot contain 'CHANGE_ME'" in str(exc.value)

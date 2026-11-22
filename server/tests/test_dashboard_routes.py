@@ -11,6 +11,7 @@ from app.models.tunnel import Tunnel
 from app.models.user import User
 from app.security.passwords import hash_password
 from app.security.tokens import COOKIE_NAME, create_session_token
+from app.services.gateway_keys import generate_key, hash_key
 from app.services.packet_codec import pack_gateway_packet
 
 
@@ -41,7 +42,14 @@ def setup_dashboard_data(db, client):
     db.flush()
 
     gw_mac = "BC:FF:4D:11:88:99"
-    gw = Gateway(mac=gw_mac, mine_id=mine.id, name="Raniganj East Gateway", active=True)
+    raw_key = generate_key()
+    gw = Gateway(
+        mac=gw_mac,
+        mine_id=mine.id,
+        name="Raniganj East Gateway",
+        api_key_hash=hash_key(raw_key),
+        active=True,
+    )
     db.add(gw)
     db.commit()
 
@@ -60,7 +68,11 @@ def setup_dashboard_data(db, client):
         batt_v=4.05,
         batt_pct=85.0,
     )
-    client.post("/api/ingest", content=pkt, headers={"Content-Type": "application/octet-stream"})
+    client.post(
+        "/api/ingest",
+        content=pkt,
+        headers={"Content-Type": "application/octet-stream", "X-Gateway-Key": raw_key},
+    )
     return gw, tunnel
 
 
@@ -84,17 +96,17 @@ def test_dashboard_routes_and_placement_workflow(client, db):
     assert "unplaced" in unplaced_res
     assert any(n["node_id"] == 1 for n in unplaced_res["unplaced"])
 
-    # 3. POST /api/placements
+    # 3. PATCH /api/nodes/{id}/placement
+    node_db = db.query(Node).filter(Node.gateway_id == gw.id, Node.node_no == 1).first()
     place_payload = {
-        "gateway_mac_address": gw_mac,
-        "node_id": 1,
-        "latitude": 23.6240,
-        "longitude": 87.0880,
+        "tunnel_id": tunnel.id,
+        "lat": 23.6240,
+        "lon": 87.0880,
     }
-    place_res = client.post("/api/placements", json=place_payload)
+    place_res = client.patch(f"/api/nodes/{node_db.id}/placement", json=place_payload)
     assert place_res.status_code == 200
 
-    node_db = db.query(Node).filter(Node.gateway_id == gw.id, Node.node_no == 1).first()
+    db.refresh(node_db)
     assert node_db.lat == 23.6240
     assert node_db.lon == 87.0880
     assert node_db.tunnel_id == tunnel.id
@@ -123,8 +135,8 @@ def test_dashboard_routes_and_placement_workflow(client, db):
     assert export_res.headers["content-type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     assert len(export_res.content) > 1000
 
-    # 8. DELETE /api/placements/{gateway}/{node_id}
-    del_res = client.delete(f"/api/placements/{gw_mac}/1")
+    # 8. DELETE /api/nodes/{id}/placement
+    del_res = client.delete(f"/api/nodes/{node_db.id}/placement")
     assert del_res.status_code == 200
 
     db.refresh(node_db)
@@ -136,3 +148,43 @@ def test_dashboard_routes_and_placement_workflow(client, db):
     assert health_res["status"] == "healthy"
     assert health_res["database"] == "PostgreSQL"
     assert health_res["payload_size"] == 38
+
+
+def test_trigger_hazard_returns_under_5_seconds(client, db):
+    """A3: Asserts POST /api/demo/trigger-hazard returns in under 5 seconds against a running server."""
+    import threading
+    import time
+    import uvicorn
+    from app.main import app
+    from app.routers.demo import simulator_instance
+
+    setup_dashboard_data(db, client)
+
+    # Start live server on an ephemeral port so simulator packets are received concurrently
+    server_port = 8894
+    config = uvicorn.Config(app, host="127.0.0.1", port=server_port, log_level="error")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    time.sleep(0.5)
+
+    old_url = simulator_instance.target_url
+    simulator_instance.target_url = f"http://127.0.0.1:{server_port}/api/ingest"
+
+    try:
+        t0 = time.time()
+        resp = client.post(
+            "/api/demo/trigger-hazard",
+            json={
+                "gateway_mac_address": "BC:FF:4D:11:88:99",
+                "node_id": 1,
+                "level": "critical",
+            },
+        )
+        duration = time.time() - t0
+        assert resp.status_code == 200
+        assert duration < 5.0, f"Hazard trigger took {duration:.2f}s, expected under 5 seconds"
+    finally:
+        simulator_instance.target_url = old_url
+        server.should_exit = True
+        thread.join(timeout=2)

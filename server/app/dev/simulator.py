@@ -5,12 +5,14 @@ Must NOT directly insert rows into the database or bypass HTTP ingest verificati
 """
 import argparse
 import random
+import sys
 import threading
 import time
 import urllib.error
 import urllib.request
 from typing import Dict, List, Optional
 
+from app.config import validate_demo_gateway_key
 from app.services.hazard_classifier import classify_hazard
 from app.services.packet_codec import norm_mac, pack_gateway_packet
 
@@ -111,8 +113,20 @@ DEMO_GATEWAYS: List[Dict] = [
 class Simulator:
     """Orchestrates realistic multi-node telemetry generation and HTTP delivery."""
 
-    def __init__(self, target_url: str = "http://127.0.0.1:8000/api/ingest"):
+    def __init__(
+        self,
+        target_url: str = "http://127.0.0.1:8000/api/ingest",
+        gateway_key: Optional[str] = None,
+    ):
         self.target_url = target_url
+        if gateway_key:
+            self.gateway_key = gateway_key
+        else:
+            try:
+                self.gateway_key = validate_demo_gateway_key()
+            except ValueError as e:
+                print(f"[simulator] ERROR: {e}", file=sys.stderr)
+                sys.exit(1)
         self.counters: Dict[str, int] = {}
         self.hazard_overrides: Dict[str, str] = {}
         self._thread: Optional[threading.Thread] = None
@@ -205,7 +219,10 @@ class Simulator:
                 req = urllib.request.Request(
                     self.target_url,
                     data=pkt,
-                    headers={"Content-Type": "application/octet-stream"},
+                    headers={
+                        "Content-Type": "application/octet-stream",
+                        "X-Gateway-Key": self.gateway_key,
+                    },
                 )
                 try:
                     with urllib.request.urlopen(req, timeout=2.0) as resp:

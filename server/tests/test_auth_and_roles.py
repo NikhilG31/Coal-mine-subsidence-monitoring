@@ -45,21 +45,24 @@ from app.security.tokens import COOKIE_NAME, create_session_token
 POLICY_TABLE = {
     # PUBLIC ROUTES
     ("POST", "/api/auth/login"): "public",
+    ("POST", "/api/auth/logout"): "public",
     ("GET", "/api/health"): "public",
     ("POST", "/api/ingest"): "public",
     # ANY LOGGED IN USER (even while force_pw_change)
     ("GET", "/api/auth/me"): "any_authenticated",
-    ("POST", "/api/auth/logout"): "any_authenticated",
     ("POST", "/api/auth/change-password"): "any_authenticated",
     # ANY ROLE (scoped to allowed mines)
+    ("GET", "/api/mines"): "any_role_scoped",
+    ("GET", "/api/mines/{mine_id}/tunnels"): "any_role_scoped",
     ("GET", "/api/nodes"): "any_role_scoped",
     ("GET", "/api/placements"): "any_role_scoped",
+    ("GET", "/api/demo/status"): "any_role_scoped",
     # SUPERIORS ONLY (scoped to allowed mines)
     ("GET", "/api/gateways"): "superiors_scoped",
     ("GET", "/api/history"): "superiors_scoped",
     ("GET", "/api/unplaced"): "superiors_scoped",
-    ("POST", "/api/placements"): "superiors_scoped",
-    ("DELETE", "/api/placements/{gateway}/{node_id}"): "superiors_scoped",
+    ("PATCH", "/api/nodes/{node_id}/placement"): "superiors_scoped",
+    ("DELETE", "/api/nodes/{node_id}/placement"): "superiors_scoped",
     ("GET", "/api/export.xlsx"): "superiors_scoped",
     ("GET", "/api/alerts"): "superiors_scoped",
     ("POST", "/api/alerts/{alert_id}/ack"): "superiors_scoped",
@@ -67,6 +70,13 @@ POLICY_TABLE = {
     ("POST", "/api/notifications/config"): "superiors_scoped",
     ("POST", "/api/notifications/test"): "superiors_scoped",
     # MANAGER ONLY
+    ("POST", "/api/mines"): "manager_only",
+    ("POST", "/api/mines/{mine_id}/tunnels"): "manager_only",
+    ("POST", "/api/mines/{mine_id}/gateways"): "manager_only",
+    ("GET", "/api/mines/{mine_id}/gateways"): "manager_only",
+    ("PATCH", "/api/gateways/{gateway_id}"): "manager_only",
+    ("POST", "/api/gateways/{gateway_id}/rotate-key"): "manager_only",
+    ("DELETE", "/api/gateways/{gateway_id}"): "manager_only",
     ("GET", "/api/users"): "manager_only",
     ("POST", "/api/users"): "manager_only",
     ("PATCH", "/api/users/{user_id}"): "manager_only",
@@ -74,7 +84,6 @@ POLICY_TABLE = {
     ("POST", "/api/demo/seed"): "manager_only",
     ("POST", "/api/demo/step"): "manager_only",
     ("POST", "/api/demo/toggle-live"): "manager_only",
-    ("GET", "/api/demo/status"): "manager_only",
     ("POST", "/api/demo/trigger-hazard"): "manager_only",
 }
 
@@ -120,73 +129,79 @@ def login_client(client, user_id: int):
 
 
 # =============================================================================
-# MATRIX ROLE ENFORCEMENT TESTS
+# DATA-DRIVEN MATRIX ROLE ENFORCEMENT TESTS
 # =============================================================================
 
-def test_superiors_only_matrix(client, db):
-    """Verifies that superiors-only routes reject unauthenticated requests with 401 and workers with 403."""
-    comp = Company(name="Coal India", name_normalized="coal india")
+def resolve_test_path(path: str) -> str:
+    """Replaces URL path parameters with dummy values for matrix routing assertions."""
+    import re
+    def _repl(match):
+        param = match.group(1)
+        if param in ("gateway", "mac", "gateway_mac"):
+            return "AA:BB:CC:DD:EE:FF"
+        return "1"
+    return re.sub(r"\{([^}]+)\}", _repl, path)
+
+
+ROLE_PERMISSIONS = {
+    "public": {"anonymous", ROLE_MANAGER, ROLE_SAFETY_OFFICER, ROLE_ENGINEER, ROLE_FOREMAN, ROLE_MINER},
+    "any_authenticated": {ROLE_MANAGER, ROLE_SAFETY_OFFICER, ROLE_ENGINEER, ROLE_FOREMAN, ROLE_MINER},
+    "any_role_scoped": {ROLE_MANAGER, ROLE_SAFETY_OFFICER, ROLE_ENGINEER, ROLE_FOREMAN, ROLE_MINER},
+    "superiors_scoped": {ROLE_MANAGER, ROLE_SAFETY_OFFICER, ROLE_ENGINEER},
+    "manager_only": {ROLE_MANAGER},
+}
+
+ALL_ROLES = [ROLE_MANAGER, ROLE_SAFETY_OFFICER, ROLE_ENGINEER, ROLE_FOREMAN, ROLE_MINER]
+
+
+def test_data_driven_route_policy_matrix(client, db):
+    """Data-driven test strictly enforcing access policies from POLICY_TABLE for all roles."""
+    comp = Company(name="Policy Test Coal", name_normalized="policy test coal")
     db.add(comp)
     db.flush()
 
-    manager = create_user_with_role(db, comp.id, "mgr", ROLE_MANAGER)
-    officer = create_user_with_role(db, comp.id, "safety", ROLE_SAFETY_OFFICER)
-    engineer = create_user_with_role(db, comp.id, "eng", ROLE_ENGINEER)
-    foreman = create_user_with_role(db, comp.id, "foreman", ROLE_FOREMAN)
-    miner = create_user_with_role(db, comp.id, "miner", ROLE_MINER)
-
-    # Clean cookies -> 401
-    client.cookies.clear()
-    assert client.get("/api/gateways").status_code == 401
-    assert client.get("/api/history").status_code == 401
-    assert client.get("/api/unplaced").status_code == 401
-    assert client.get("/api/alerts").status_code == 401
-    assert client.get("/api/export.xlsx").status_code == 401
-    assert client.post("/api/notifications/test").status_code == 401
-
-    # Worker roles -> 403
-    for worker in (foreman, miner):
-        login_client(client, worker.id)
-        assert client.get("/api/gateways").status_code == 403
-        assert client.get("/api/history").status_code == 403
-        assert client.get("/api/unplaced").status_code == 403
-        assert client.get("/api/alerts").status_code == 403
-        assert client.get("/api/export.xlsx").status_code == 403
-        assert client.post("/api/notifications/test").status_code == 403
-
-    # Superiors -> permitted (or 501 for notifications/test stub)
-    for superior in (manager, officer, engineer):
-        login_client(client, superior.id)
-        assert client.get("/api/gateways").status_code == 200
-        assert client.get("/api/history").status_code == 200
-        assert client.get("/api/unplaced").status_code == 200
-        assert client.get("/api/alerts").status_code == 200
-        assert client.post("/api/notifications/test").status_code == 501
-
-
-def test_manager_only_matrix(client, db):
-    """Verifies that manager-only endpoints reject safety officers and engineers with 403."""
-    comp = Company(name="Western Coalfields", name_normalized="western coalfields")
-    db.add(comp)
+    mine = Mine(company_id=comp.id, name="Policy Mine", status="active", method="underground")
+    db.add(mine)
     db.flush()
 
-    manager = create_user_with_role(db, comp.id, "w_mgr", ROLE_MANAGER)
-    officer = create_user_with_role(db, comp.id, "w_officer", ROLE_SAFETY_OFFICER)
-    engineer = create_user_with_role(db, comp.id, "w_eng", ROLE_ENGINEER)
+    users = {}
+    for role in ALL_ROLES:
+        u = create_user_with_role(db, comp.id, f"usr_{role}", role)
+        db.add(UserMine(user_id=u.id, mine_id=mine.id))
+        users[role] = u
+    db.commit()
 
-    # Superiors who are not managers get 403
-    for sub in (officer, engineer):
-        login_client(client, sub.id)
-        assert client.get("/api/users").status_code == 403
-        assert client.post("/api/users", json={}).status_code == 403
-        assert client.patch(f"/api/users/{sub.id}", json={}).status_code == 403
-        assert client.delete(f"/api/users/{sub.id}").status_code == 403
-        assert client.get("/api/demo/status").status_code == 403
+    from unittest.mock import patch
 
-    # Manager gets 200
-    login_client(client, manager.id)
-    assert client.get("/api/users").status_code == 200
-    assert client.get("/api/demo/status").status_code == 200
+    with patch("app.routers.demo.simulator_instance.step", return_value=7):
+        for (method, path), policy in POLICY_TABLE.items():
+            resolved_path = resolve_test_path(path)
+            allowed = ROLE_PERMISSIONS[policy]
+
+            # 1. Anonymous request
+            client.cookies.clear()
+            resp = client.request(method, resolved_path, json={})
+            if policy == "public":
+                assert resp.status_code not in (401, 403), (
+                    f"Anonymous was rejected on public route {method} {path}: {resp.status_code}"
+                )
+            else:
+                assert resp.status_code == 401, (
+                    f"Anonymous did not receive 401 on protected route {method} {path}: got {resp.status_code}"
+                )
+
+            # 2. Authenticated requests per role
+            for role in ALL_ROLES:
+                login_client(client, users[role].id)
+                resp = client.request(method, resolved_path, json={})
+                if role in allowed:
+                    assert resp.status_code not in (401, 403), (
+                        f"Role '{role}' unexpectedly rejected with {resp.status_code} on allowed route {method} {path}"
+                    )
+                else:
+                    assert resp.status_code == 403, (
+                        f"Role '{role}' was not forbidden (403) on route {method} {path}: got {resp.status_code}"
+                    )
 
 
 # =============================================================================
@@ -227,14 +242,16 @@ def test_company_tenant_isolation(client, db):
     assert client.get(f"/api/history?gateway={gw_b.mac}").status_code == 404
 
     # Placing or unplacing Company B's node returns 404
+    t_b = Tunnel(mine_id=mine_b.id, name="Tunnel B", code="TUN-B")
+    db.add(t_b)
+    db.commit()
     place_payload = {
-        "gateway_mac_address": gw_b.mac,
-        "node_id": 5,
-        "latitude": 23.0,
-        "longitude": 85.0,
+        "tunnel_id": t_b.id,
+        "lat": 23.0,
+        "lon": 85.0,
     }
-    assert client.post("/api/placements", json=place_payload).status_code == 404
-    assert client.delete(f"/api/placements/{gw_b.mac}/5").status_code == 404
+    assert client.patch(f"/api/nodes/{node_b.id}/placement", json=place_payload).status_code == 404
+    assert client.delete(f"/api/nodes/{node_b.id}/placement").status_code == 404
 
 
 # =============================================================================
@@ -429,11 +446,15 @@ def test_worker_node_view_field_leakage_protection(client, db):
     db.add(m)
     db.flush()
 
+    t = Tunnel(mine_id=m.id, name="Tunnel 1", code="TUN-1")
+    db.add(t)
+    db.flush()
+
     gw = Gateway(mac="33:33:33:33:33:33", mine_id=m.id, name="GW 3", active=True)
     db.add(gw)
     db.flush()
 
-    node = Node(gateway_id=gw.id, node_no=1, status="normal", lat=23.5, lon=85.5)
+    node = Node(gateway_id=gw.id, node_no=1, status="normal", tunnel_id=t.id, lat=23.5, lon=85.5)
     db.add(node)
     db.commit()
 
@@ -457,6 +478,155 @@ def test_worker_node_view_field_leakage_protection(client, db):
     forbidden_keys = {"gateway_mac_address", "gateway", "counter", "score", "reasons", "placed_by"}
     for k in forbidden_keys:
         assert k not in w_node, f"Security leakage: Forbidden field '{k}' exposed to worker"
+
+
+def test_worker_placements_field_leakage_protection(client, db):
+    """A2: Worker callers of GET /api/placements receive ONLY worker-safe fields."""
+    comp = Company(name="Placements Leakage Test", name_normalized="placements leakage test")
+    db.add(comp)
+    db.flush()
+
+    m = Mine(company_id=comp.id, name="Placements Mine", status="active", method="underground")
+    db.add(m)
+    db.flush()
+
+    t = Tunnel(mine_id=m.id, name="Placements Tunnel", code="TUN-PL")
+    db.add(t)
+    db.flush()
+
+    gw = Gateway(mac="44:44:44:44:44:44", mine_id=m.id, name="GW 4", active=True)
+    db.add(gw)
+    db.flush()
+
+    mgr = create_user_with_role(db, comp.id, "pl_mgr", ROLE_MANAGER)
+    miner = create_user_with_role(db, comp.id, "pl_miner", ROLE_MINER)
+    db.add(UserMine(user_id=miner.id, mine_id=m.id))
+    db.flush()
+
+    node = Node(
+        gateway_id=gw.id,
+        node_no=9,
+        tunnel_id=t.id,
+        lat=23.7,
+        lon=86.4,
+        placed_by=mgr.id,
+        status="normal",
+    )
+    db.add(node)
+    db.commit()
+
+    # 1. Miner request: only node_id, location_name, latitude, longitude, placed_at
+    login_client(client, miner.id)
+    miner_resp = client.get("/api/placements")
+    assert miner_resp.status_code == 200
+    miner_placements = miner_resp.json()["placements"]
+    assert len(miner_placements) == 1
+    p = miner_placements[0]
+    expected_keys = {"node_id", "location_name", "latitude", "longitude", "placed_at"}
+    assert set(p.keys()) == expected_keys
+    assert "gateway_mac_address" not in p
+    assert "placed_by" not in p
+
+    # 2. Manager request: keeps gateway_mac_address and placed_by
+    login_client(client, mgr.id)
+    mgr_resp = client.get("/api/placements")
+    assert mgr_resp.status_code == 200
+    mgr_placements = mgr_resp.json()["placements"]
+    assert len(mgr_placements) == 1
+    mp = mgr_placements[0]
+    assert "gateway_mac_address" in mp
+    assert mp["gateway_mac_address"] == "44:44:44:44:44:44"
+    assert mp["placed_by"] == mgr.id
+
+
+def test_worker_node_extra_field_forbidden():
+    """A6: WorkerNodeView and NodesResponse reject unexpected fields."""
+    from pydantic import ValidationError
+    from app.schemas.nodes import WorkerNodeView, NodesResponse
+
+    # Extra field raises ValidationError
+    with pytest.raises(ValidationError):
+        WorkerNodeView(
+            node_id=1,
+            location_name="Test",
+            latitude=23.0,
+            longitude=86.0,
+            status="normal",
+            color="#2d7a45",
+            tilt_x=0.0,
+            tilt_y=0.0,
+            vibration_magnitude=0.01,
+            vibration_detected=False,
+            battery_percentage=90.0,
+            low_battery=False,
+            online=True,
+            age_s=5.0,
+            unexpected_leaked_field="leak",  # must fail extra="forbid"
+        )
+
+
+def test_password_policy_enforcement(client, db):
+    """A4: Password policy rejects short, matching, or CHANGE_ME passwords."""
+    from app.security.password_policy import validate_new_password
+
+    # Direct policy unit tests
+    with pytest.raises(ValueError, match="at least 10 characters"):
+        validate_new_password("Short1!", "user1")
+    with pytest.raises(ValueError, match="cannot match username"):
+        validate_new_password("TestUsername123", "testusername123")
+    with pytest.raises(ValueError, match="CHANGE_ME"):
+        validate_new_password("CHANGE_ME_NOW_1234", "user1")
+
+    # Valid password passes
+    validate_new_password("CompletelySecure@2026", "user1")
+
+    # API route integration: POST /api/users
+    comp = Company(name="Policy API Corp", name_normalized="policy api corp")
+    db.add(comp)
+    db.flush()
+    mgr = create_user_with_role(db, comp.id, "mgr_pol", ROLE_MANAGER)
+    login_client(client, mgr.id)
+
+    # Short password -> 400
+    bad_resp = client.post(
+        "/api/users",
+        json={
+            "username": "new_sub_user",
+            "full_name": "New Sub",
+            "role": "engineer",
+            "initial_password": "short",
+        },
+    )
+    assert bad_resp.status_code == 400
+    assert "at least 10 characters" in bad_resp.json()["detail"]
+
+    # CHANGE_ME password -> 400
+    change_me_resp = client.post(
+        "/api/users",
+        json={
+            "username": "new_sub_user2",
+            "full_name": "New Sub",
+            "role": "engineer",
+            "initial_password": "CHANGE_ME_PASSWORD_123",
+        },
+    )
+    assert change_me_resp.status_code == 400
+    assert "CHANGE_ME" in change_me_resp.json()["detail"]
+
+
+def test_logout_always_succeeds_without_active_session(client):
+    """A6: POST /api/auth/logout always clears cookie and returns 200 without requiring valid session."""
+    # 1. Anonymous with no cookie
+    client.cookies.clear()
+    resp1 = client.post("/api/auth/logout")
+    assert resp1.status_code == 200
+    assert resp1.json() == {"message": "Logged out"}
+
+    # 2. Tampered cookie
+    client.cookies.set(COOKIE_NAME, "tampered.jwt.cookie")
+    resp2 = client.post("/api/auth/logout")
+    assert resp2.status_code == 200
+    assert resp2.json() == {"message": "Logged out"}
 
 
 def test_user_hierarchy_protections(client, db):

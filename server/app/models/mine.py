@@ -3,7 +3,7 @@
 Owns the mines table schema, status and method constraints, and child site associations.
 Must NOT execute GIS spatial calculations, telemetry ingest, or authorization checks.
 """
-from sqlalchemy import CheckConstraint, Column, Float, ForeignKey, Integer, String, text
+from sqlalchemy import CheckConstraint, Column, Float, ForeignKey, Integer, String, UniqueConstraint, text
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -27,6 +27,7 @@ class Mine(Base):
     __table_args__ = (
         CheckConstraint("status IN ('active', 'maintenance', 'suspended', 'closed')", name="ck_mines_status"),
         CheckConstraint("method IN ('opencast', 'underground', 'mixed')", name="ck_mines_method"),
+        UniqueConstraint("company_id", "name", name="uq_mines_company_name"),
     )
 
     company = relationship("Company", back_populates="mines")

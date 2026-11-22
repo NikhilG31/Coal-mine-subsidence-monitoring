@@ -42,7 +42,22 @@ SEED_MANAGER_USERNAME: Optional[str] = os.getenv("SEED_MANAGER_USERNAME")
 SEED_MANAGER_PASSWORD: Optional[str] = os.getenv("SEED_MANAGER_PASSWORD")
 SEED_MANAGER_FULL_NAME: str = os.getenv("SEED_MANAGER_FULL_NAME", "General Manager")
 
-# Phase B: Security and Session Authentication Configuration
+# Phase B: Gateway Key and Compatibility Configuration
+ALLOW_UNKEYED_INGEST: bool = os.getenv("ALLOW_UNKEYED_INGEST", "false").lower() in ("true", "1", "yes")
+DEMO_GATEWAY_KEY: str = os.getenv("DEMO_GATEWAY_KEY", "")
+
+
+def validate_demo_gateway_key() -> str:
+    """Validates and returns DEMO_GATEWAY_KEY, requiring >= 32 chars, no CHANGE_ME, >= 12 distinct chars."""
+    if not DEMO_GATEWAY_KEY or len(DEMO_GATEWAY_KEY) < 32:
+        raise ValueError(
+            "DEMO_GATEWAY_KEY environment variable is required and must be at least 32 characters long."
+        )
+    if "change_me" in DEMO_GATEWAY_KEY.lower():
+        raise ValueError("DEMO_GATEWAY_KEY cannot contain 'CHANGE_ME'.")
+    if len(set(DEMO_GATEWAY_KEY)) < 12:
+        raise ValueError("DEMO_GATEWAY_KEY must contain at least 12 distinct characters.")
+    return DEMO_GATEWAY_KEY
 JWT_SECRET: str = os.getenv("JWT_SECRET", "")
 SESSION_HOURS: int = int(os.getenv("SESSION_HOURS", "8"))
 COOKIE_SECURE: bool = os.getenv("COOKIE_SECURE", "false").lower() in ("true", "1", "yes")
@@ -54,8 +69,12 @@ CORS_ORIGINS: List[str] = [
 
 
 def validate_jwt_secret() -> None:
-    """Enforces that JWT_SECRET is configured and has at least 32 characters."""
+    """Enforces that JWT_SECRET is configured, >= 32 chars, >= 12 distinct chars, and no CHANGE_ME."""
     if not JWT_SECRET or len(JWT_SECRET) < 32:
         raise ValueError(
             "JWT_SECRET environment variable is required and must be at least 32 characters long."
         )
+    if "change_me" in JWT_SECRET.lower():
+        raise ValueError("JWT_SECRET cannot contain 'CHANGE_ME'.")
+    if len(set(JWT_SECRET)) < 12:
+        raise ValueError("JWT_SECRET must contain at least 12 distinct characters.")

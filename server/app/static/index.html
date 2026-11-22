@@ -40,6 +40,7 @@
         </div>
 
         <button id="btnOpenAuth" class="neo-btn btn-small" style="display:none;" onclick="openAuthModal()">Sign In / Sign Up</button>
+        <button id="btnManageMines" class="neo-btn btn-small" onclick="openMinesModal()">⛏️ Mines &amp; Gateways</button>
         <button id="btnAddUser" class="neo-btn btn-small" onclick="openAddUserModal()">+ Add User</button>
         <button id="btnNotifConfig" class="neo-btn btn-small" onclick="openNotifModal()">🔔 Alert Channels</button>
         <button id="btnAudioToggle" class="neo-btn btn-small" onclick="toggleAudioChime()">🔊 Sound: ON</button>
@@ -478,6 +479,258 @@
             Trigger Subsidence Spike Now
           </button>
         </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: One-Time Hardware Gateway Key Display -->
+  <div id="gatewayKeyModal" class="modal-overlay">
+    <div class="modal-window">
+      <div class="modal-header" style="background:var(--saffron); color:#fff;">
+        <h3>🔑 HARDWARE GATEWAY PROVISIONING KEY</h3>
+      </div>
+      <div class="modal-body">
+        <div style="background:#fff3cd; border:2px solid #ffeeba; padding:12px; margin-bottom:14px; font-weight:700; color:#856404; font-size:12px;">
+          ⚠️ CRITICAL: This API key is shown ONCE and cannot be retrieved later. Flash or configure your hardware gateway with this key now!
+        </div>
+        <div class="form-group">
+          <label for="displayedGatewayKey">Hardware Gateway API Key</label>
+          <input type="text" id="displayedGatewayKey" class="form-input" readonly style="font-family:var(--mono); font-weight:700; background:#f0efe9; cursor:text;">
+        </div>
+        <div style="display:flex; gap:10px;">
+          <button type="button" class="neo-btn btn-small" onclick="copyGatewayKey()">📋 Copy to Clipboard</button>
+          <button type="button" class="neo-btn btn-small btn-primary" style="flex:1;" onclick="closeGatewayKeyModal()">✓ I have securely saved this key</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Manager Onboarding Wizard (When allowed_mine_ids is empty) -->
+  <div id="onboardingModal" class="modal-overlay">
+    <div class="modal-window" style="max-width:620px;">
+      <div class="modal-header" style="background:var(--saffron); color:#fff;">
+        <h3>🚀 WELCOME: SETUP YOUR FIRST MINE</h3>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:12px; color:var(--ink-3); margin-bottom:14px;">
+          Your company workspace is new! Complete these quick setup steps to register your coal mine, configure an underground tunnel, provision your first gateway, and start tracking subsidence telemetry:
+        </p>
+
+        <!-- Step 1: Create First Mine -->
+        <div id="obStep1" class="zine-box" style="margin-bottom:14px; padding:12px;">
+          <h4 style="font-family:var(--condensed); margin-bottom:8px;">STEP 1: CREATE YOUR FIRST MINE</h4>
+          <form onsubmit="handleOnboardingMineSubmit(event)">
+            <div class="form-group">
+              <label for="obMineName">Mine Site Name</label>
+              <input type="text" id="obMineName" class="form-input" required placeholder="e.g. Jharia Seam #11 Colliery">
+            </div>
+            <div class="form-group">
+              <label for="obMineSubsidiary">Operating Subsidiary</label>
+              <input type="text" id="obMineSubsidiary" class="form-input" placeholder="e.g. BCCL / ECL / CMPDI">
+            </div>
+            <div style="display:flex; gap:10px;">
+              <div class="form-group" style="flex:1;">
+                <label for="obMineLat">Latitude</label>
+                <input type="number" step="any" id="obMineLat" class="form-input" placeholder="23.7438">
+              </div>
+              <div class="form-group" style="flex:1;">
+                <label for="obMineLon">Longitude</label>
+                <input type="number" step="any" id="obMineLon" class="form-input" placeholder="86.4116">
+              </div>
+            </div>
+            <button type="submit" class="neo-btn btn-small btn-primary">Create Mine &amp; Proceed to Step 2 ➔</button>
+          </form>
+        </div>
+
+        <!-- Step 2: Add Tunnel -->
+        <div id="obStep2" class="zine-box" style="display:none; margin-bottom:14px; padding:12px;">
+          <h4 style="font-family:var(--condensed); margin-bottom:8px;">STEP 2: ADD AN UNDERGROUND TUNNEL / INCLINE</h4>
+          <form onsubmit="handleOnboardingTunnelSubmit(event)">
+            <div class="form-group">
+              <label for="obTunnelName">Tunnel Name</label>
+              <input type="text" id="obTunnelName" class="form-input" required placeholder="e.g. Main Incline Shaft #1">
+            </div>
+            <div class="form-group">
+              <label for="obTunnelCode">Tunnel Code (Alphanumeric)</label>
+              <input type="text" id="obTunnelCode" class="form-input" required placeholder="e.g. TUN-01">
+            </div>
+            <div class="form-group">
+              <label for="obTunnelDepth">Depth (meters)</label>
+              <input type="number" step="any" id="obTunnelDepth" class="form-input" placeholder="180">
+            </div>
+            <button type="submit" class="neo-btn btn-small btn-primary">Create Tunnel &amp; Proceed to Step 3 ➔</button>
+          </form>
+        </div>
+
+        <!-- Step 3: Register Gateway -->
+        <div id="obStep3" class="zine-box" style="display:none; margin-bottom:14px; padding:12px;">
+          <h4 style="font-family:var(--condensed); margin-bottom:8px;">STEP 3: REGISTER HARDWARE GATEWAY</h4>
+          <form onsubmit="handleOnboardingGatewaySubmit(event)">
+            <div class="form-group">
+              <label for="obGwName">Gateway Name</label>
+              <input type="text" id="obGwName" class="form-input" required placeholder="e.g. Pithead Gateway #1">
+            </div>
+            <div class="form-group">
+              <label for="obGwMac">Hardware MAC Address (XX:XX:XX:XX:XX:XX)</label>
+              <input type="text" id="obGwMac" class="form-input" required placeholder="e.g. A4:C1:38:90:12:01">
+            </div>
+            <button type="submit" class="neo-btn btn-small btn-primary">Register Gateway &amp; Generate API Key ➔</button>
+          </form>
+        </div>
+
+        <!-- Step 4: Ready / Go to Map -->
+        <div id="obStep4" class="zine-box" style="display:none; margin-bottom:14px; padding:12px;">
+          <h4 style="font-family:var(--condensed); margin-bottom:8px; color:var(--green-2);">✓ SETUP COMPLETE!</h4>
+          <p style="font-size:12px; margin-bottom:12px;">
+            Your mine, tunnel, and gateway are provisioned. Flash your gateway hardware with the generated key or run the local development simulator.
+            Transmitting nodes will appear in your <strong>Unplaced Nodes</strong> queue ready to be placed on the surface map!
+          </p>
+          <button type="button" class="neo-btn btn-submit btn-primary" style="width:100%;" onclick="finishOnboarding()">
+            Go to Surface Map &amp; Dashboard
+          </button>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Worker No Mines Notice -->
+  <div id="noMinesModal" class="modal-overlay">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h3>MINE ACCESS RESTRICTED</h3>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:14px; color:var(--ink-2); line-height:1.5; margin-bottom:16px;">
+          No mines assigned. Ask your manager to grant you access to a mine.
+        </p>
+        <button class="neo-btn btn-small" onclick="handleLogout()">Log Out</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Mines, Tunnels and Gateways Management (Manager Only) -->
+  <div id="minesModal" class="modal-overlay">
+    <div class="modal-window" style="max-width:750px;">
+      <div class="modal-header">
+        <h3>⛏️ MINES, TUNNELS &amp; HARDWARE GATEWAYS</h3>
+        <button class="neo-btn btn-small" onclick="closeMinesModal()">✖</button>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+          <span style="font-size:12px; color:var(--ink-3);">Company Mine Sites &amp; Topology</span>
+          <button class="neo-btn btn-small btn-primary" onclick="openAddMineModal()">+ Add New Mine</button>
+        </div>
+        <div id="minesListContainer" style="display:flex; flex-direction:column; gap:14px;">
+          <div style="font-family:var(--mono); font-size:12px; color:var(--ink-3);">Loading mine sites...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Add Mine -->
+  <div id="addMineModal" class="modal-overlay">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h3>ADD NEW MINE SITE</h3>
+        <button class="neo-btn btn-small" onclick="closeAddMineModal()">✖</button>
+      </div>
+      <div class="modal-body">
+        <form onsubmit="handleCreateMineSubmit(event)">
+          <div class="form-group">
+            <label for="newMineName">Mine Name</label>
+            <input type="text" id="newMineName" class="form-input" required placeholder="e.g. Moonidih Colliery">
+          </div>
+          <div class="form-group">
+            <label for="newMineSubsidiary">Subsidiary</label>
+            <input type="text" id="newMineSubsidiary" class="form-input" placeholder="e.g. BCCL">
+          </div>
+          <div style="display:flex; gap:10px;">
+            <div class="form-group" style="flex:1;">
+              <label for="newMineLat">Latitude</label>
+              <input type="number" step="any" id="newMineLat" class="form-input" placeholder="23.7438">
+            </div>
+            <div class="form-group" style="flex:1;">
+              <label for="newMineLon">Longitude</label>
+              <input type="number" step="any" id="newMineLon" class="form-input" placeholder="86.4116">
+            </div>
+          </div>
+          <button type="submit" class="neo-btn btn-submit btn-primary" style="width:100%;">Create Mine Site</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Add Tunnel -->
+  <div id="addTunnelModal" class="modal-overlay">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h3>ADD UNDERGROUND TUNNEL</h3>
+        <button class="neo-btn btn-small" onclick="closeAddTunnelModal()">✖</button>
+      </div>
+      <div class="modal-body">
+        <form onsubmit="handleCreateTunnelSubmit(event)">
+          <input type="hidden" id="tunnelMineId">
+          <div class="form-group">
+            <label for="newTunnelName">Tunnel / Shaft Name</label>
+            <input type="text" id="newTunnelName" class="form-input" required placeholder="e.g. Western Longwall Panel #2">
+          </div>
+          <div class="form-group">
+            <label for="newTunnelCode">Tunnel Code (Alphanumeric)</label>
+            <input type="text" id="newTunnelCode" class="form-input" required placeholder="e.g. WL-02">
+          </div>
+          <div class="form-group">
+            <label for="newTunnelDepth">Depth (m)</label>
+            <input type="number" step="any" id="newTunnelDepth" class="form-input" placeholder="220">
+          </div>
+          <button type="submit" class="neo-btn btn-submit btn-primary" style="width:100%;">Add Tunnel</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Add Gateway -->
+  <div id="addGatewayModal" class="modal-overlay">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h3>REGISTER HARDWARE GATEWAY</h3>
+        <button class="neo-btn btn-small" onclick="closeAddGatewayModal()">✖</button>
+      </div>
+      <div class="modal-body">
+        <form onsubmit="handleCreateGatewaySubmit(event)">
+          <input type="hidden" id="gatewayMineId">
+          <div class="form-group">
+            <label for="newGatewayName">Gateway Name</label>
+            <input type="text" id="newGatewayName" class="form-input" required placeholder="e.g. Pithead Telemetry Gateway">
+          </div>
+          <div class="form-group">
+            <label for="newGatewayMac">Hardware MAC Address (XX:XX:XX:XX:XX:XX)</label>
+            <input type="text" id="newGatewayMac" class="form-input" required placeholder="e.g. A4:C1:38:90:12:01">
+          </div>
+          <button type="submit" class="neo-btn btn-submit btn-primary" style="width:100%;">Register &amp; Generate Key</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Required Tunnel Picker for Node Placement -->
+  <div id="tunnelPickerModal" class="modal-overlay">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h3>SELECT TUNNEL FOR PLACEMENT</h3>
+        <button class="neo-btn btn-small" onclick="closeTunnelPickerModal()">✖</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:12px; color:var(--ink-3); margin-bottom:12px;">
+          A placed node must be assigned to an underground tunnel belonging to its gateway's mine site:
+        </p>
+        <div class="form-group">
+          <label for="placementTunnelSelect">Underground Tunnel</label>
+          <select id="placementTunnelSelect" class="form-select"></select>
+        </div>
+        <button type="button" class="neo-btn btn-submit btn-primary" style="width:100%;" onclick="confirmTunnelSelectionAndStartMapMode()">
+          Proceed to Click Placement on Map ➔
+        </button>
       </div>
     </div>
   </div>

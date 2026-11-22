@@ -18,6 +18,7 @@ from app.database import SessionLocal
 from app.models.company import Company, normalize_company_name
 from app.models.user import User
 from app.security.passwords import hash_password
+from app.security.password_policy import validate_new_password
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,6 +51,13 @@ def seed_manager(
 
     clean_company = company_name.strip()
     clean_username = username.strip()
+
+    if "change_me" in clean_company.lower():
+        sys.exit("Error: Company name cannot contain 'CHANGE_ME'.")
+
+    if "change_me" in clean_username.lower():
+        sys.exit("Error: Manager username cannot contain 'CHANGE_ME'.")
+
     norm_name = normalize_company_name(clean_company)
 
     # Resolve password: argument -> env -> getpass -> exit
@@ -66,6 +74,11 @@ def seed_manager(
         sys.exit("Error: Manager password cannot be empty.")
 
     clean_password = password.strip()
+    try:
+        validate_new_password(clean_password, clean_username)
+    except ValueError as e:
+        sys.exit(f"Error: Invalid password: {e}")
+
     clean_full_name = full_name.strip() if full_name else "General Manager"
 
     db = SessionLocal()

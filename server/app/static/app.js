@@ -29,6 +29,10 @@ let lastKnownWorstStatus = "normal";
 
 // Auth State
 let currentUser = null;
+let allowedMines = [];
+let pendingPlacementNode = null;
+let pendingPlacementTunnelId = null;
+let onboardingMineId = null;
 
 // ==========================================
 // INITIALIZATION
@@ -201,6 +205,59 @@ function updateMapMarkers(nodes) {
 // INTERACTIVE PLACEMENT MODE WORKFLOW
 // ==========================================
 
+async function startPlacementWorkflow(node) {
+  if (!node) return;
+  pendingPlacementNode = node;
+
+  try {
+    let mineId = node.mine_id;
+    if (!mineId && allowedMines.length === 1) {
+      mineId = allowedMines[0];
+    }
+    if (!mineId) {
+      const mRes = await apiFetch("/api/mines");
+      if (mRes.mines && mRes.mines.length > 0) {
+        mineId = mRes.mines[0].id;
+      }
+    }
+    if (!mineId) {
+      alert("No mine associated with this node. Please configure a mine first.");
+      return;
+    }
+
+    const tRes = await apiFetch(`/api/mines/${mineId}/tunnels`);
+    const tunnels = tRes.tunnels || [];
+    if (!tunnels.length) {
+      alert("No underground tunnels found in this mine. Please add a tunnel first under 'Mines & Gateways'.");
+      return;
+    }
+
+    const sel = document.getElementById("placementTunnelSelect");
+    sel.innerHTML = tunnels.map(t =>
+      `<option value="${t.id}">${t.name} (${t.code}) - Depth: ${t.depth_m || 0}m</option>`
+    ).join("");
+
+    document.getElementById("tunnelPickerModal").classList.add("open");
+  } catch (err) {
+    alert("Could not load tunnels for placement: " + err.message);
+  }
+}
+
+function closeTunnelPickerModal() {
+  document.getElementById("tunnelPickerModal").classList.remove("open");
+}
+
+function confirmTunnelSelectionAndStartMapMode() {
+  const sel = document.getElementById("placementTunnelSelect");
+  if (!sel.value) {
+    alert("Please select a tunnel.");
+    return;
+  }
+  pendingPlacementTunnelId = parseInt(sel.value, 10);
+  closeTunnelPickerModal();
+  startPlacementMode(pendingPlacementNode);
+}
+
 function startPlacementMode(node) {
   placementMode.active = true;
   placementMode.node = node;
@@ -208,7 +265,7 @@ function startPlacementMode(node) {
   document.body.classList.add("placement-cursor");
   const banner = document.getElementById("placementModeBanner");
   const bannerText = document.getElementById("placementBannerText");
-  bannerText.textContent = `🎯 PLACEMENT MODE ACTIVE: Click anywhere on the map to place Node #${node.node_id} (Gateway: ${node.gateway_mac_address})`;
+  bannerText.textContent = `🎯 PLACEMENT MODE ACTIVE: Click anywhere on the map to place Node #${node.node_id} (Tunnel ID: ${pendingPlacementTunnelId})`;
   banner.style.display = "block";
 
   // Auto pan to known coal belt if zoomed out
@@ -220,6 +277,8 @@ function startPlacementMode(node) {
 function cancelPlacementMode() {
   placementMode.active = false;
   placementMode.node = null;
+  pendingPlacementNode = null;
+  pendingPlacementTunnelId = null;
   document.body.classList.remove("placement-cursor");
   document.getElementById("placementModeBanner").style.display = "none";
 }
@@ -228,29 +287,21 @@ async function handleMapClickPlacement(lat, lng) {
   const node = placementMode.node;
   if (!node) return;
 
-  const defaultName = node.location_name && !node.location_name.includes("Unplaced") 
-    ? node.location_name 
-    : `Node ${node.node_id} Surface Station`;
-
-  const locName = prompt(`Enter surface location name for Node #${node.node_id}:`, defaultName) || defaultName;
-
   try {
-    const res = await apiFetch("/api/placements", {
-      method: "POST",
+    const res = await apiFetch(`/api/nodes/${node.id}/placement`, {
+      method: "PATCH",
       body: JSON.stringify({
-        gateway_mac_address: node.gateway_mac_address,
-        node_id: node.node_id,
-        latitude: lat,
-        longitude: lng,
-        location_name: locName
-      })
+        tunnel_id: pendingPlacementTunnelId,
+        lat: lat,
+        lon: lng,
+      }),
     });
 
     cancelPlacementMode();
     await fetchDashboardData();
-    
+
     // Open inspector for placed node
-    const updatedNode = { ...node, latitude: lat, longitude: lng, location_name: locName, placed: true };
+    const updatedNode = { ...node, latitude: lat, longitude: lng, tunnel_id: pendingPlacementTunnelId, placed: true };
     openInspectorDrawer(updatedNode);
   } catch (err) {
     alert("Placement failed: " + err.message);
@@ -260,7 +311,7 @@ async function handleMapClickPlacement(lat, lng) {
 function repositionCurrentNode() {
   if (!selectedNode) return;
   closeInspectorDrawer();
-  startPlacementMode(selectedNode);
+  startPlacementWorkflow(selectedNode);
 }
 
 async function unplaceCurrentNode() {
@@ -268,8 +319,8 @@ async function unplaceCurrentNode() {
   if (!confirm(`Remove Node #${selectedNode.node_id} from map? It will return to the Unplaced Nodes list.`)) return;
 
   try {
-    await apiFetch(`/api/placements/${encodeURIComponent(selectedNode.gateway_mac_address)}/${selectedNode.node_id}`, {
-      method: "DELETE"
+    await apiFetch(`/api/nodes/${selectedNode.id}/placement`, {
+      method: "DELETE",
     });
     closeInspectorDrawer();
     await fetchDashboardData();
@@ -527,7 +578,7 @@ function renderUnplacedNodes(unplaced) {
         </span>
       </div>
       <div>
-        <button class="neo-btn btn-small btn-primary" onclick="startPlacementMode(${JSON.stringify(n).replace(/"/g, '&quot;')})">
+        <button class="neo-btn btn-small btn-primary" onclick="startPlacementWorkflow(${JSON.stringify(n).replace(/"/g, '&quot;')})">
           📍 Place on Map
         </button>
       </div>
@@ -753,9 +804,16 @@ async function checkAuth() {
   try {
     const data = await apiFetch("/api/auth/me");
     currentUser = data.user;
+    allowedMines = data.allowed_mine_ids || [];
     updateUserBadge(currentUser);
     if (currentUser.force_pw_change) {
       openChangePasswordModal();
+    } else if (allowedMines.length === 0) {
+      if (currentUser.role === "manager") {
+        openOnboardingModal();
+      } else {
+        openNoMinesModal();
+      }
     }
   } catch (e) {
     openAuthModal();
@@ -774,19 +832,32 @@ function updateUserBadge(user) {
   // Role-based cosmetic visibility
   const isManager = user.role === "manager";
   const isSuperior = ["manager", "safety_officer", "engineer"].includes(user.role);
+  const isWorker = ["foreman", "miner"].includes(user.role);
 
   const btnAddUser = document.getElementById("btnAddUser");
   if (btnAddUser) btnAddUser.style.display = isManager ? "inline-flex" : "none";
 
+  const btnManageMines = document.getElementById("btnManageMines");
+  if (btnManageMines) btnManageMines.style.display = isManager ? "inline-flex" : "none";
+
   const btnNotif = document.getElementById("btnNotifConfig");
   if (btnNotif) btnNotif.style.display = isSuperior ? "inline-flex" : "none";
 
+  const demoBar = document.querySelector(".demo-bar");
+  if (demoBar) demoBar.style.display = isManager ? "block" : "none";
+
   // Hide placement controls for workers
-  const isWorker = ["foreman", "miner"].includes(user.role);
-  const unplacedCard = document.getElementById("unplacedList");
-  if (unplacedCard && isWorker) {
-    unplacedCard.parentElement.style.display = "none";
-  }
+  const unplacedCard = document.getElementById("unplacedList")?.closest(".zine-box");
+  if (unplacedCard) unplacedCard.style.display = isWorker ? "none" : "block";
+
+  const gatewaysCard = document.getElementById("gatewaysTree")?.closest(".zine-box");
+  if (gatewaysCard) gatewaysCard.style.display = isWorker ? "none" : "block";
+
+  const btnReposition = document.getElementById("btnReposition");
+  if (btnReposition) btnReposition.style.display = isWorker ? "none" : "inline-block";
+
+  const btnUnplace = document.querySelector("button[onclick='unplaceCurrentNode()']");
+  if (btnUnplace) btnUnplace.style.display = isWorker ? "none" : "inline-block";
 }
 
 function openAuthModal() {
@@ -1039,5 +1110,341 @@ async function handleTriggerHazardSubmit(e) {
     }
   } catch (err) {
     alert("Hazard simulation error: " + err.message);
+  }
+}
+
+// ==========================================
+// GATEWAY KEY DISPLAY MODAL
+// ==========================================
+
+function showGatewayKey(apiKey) {
+  document.getElementById("displayedGatewayKey").value = apiKey;
+  document.getElementById("gatewayKeyModal").classList.add("open");
+}
+
+function copyGatewayKey() {
+  const input = document.getElementById("displayedGatewayKey");
+  input.select();
+  navigator.clipboard.writeText(input.value);
+  alert("Gateway API key copied to clipboard! Save it in your gateway firmware / environment.");
+}
+
+function closeGatewayKeyModal() {
+  document.getElementById("gatewayKeyModal").classList.remove("open");
+}
+
+// ==========================================
+// MANAGER ONBOARDING WIZARD & RESTRICTED VIEWS
+// ==========================================
+
+function openOnboardingModal() {
+  document.getElementById("onboardingModal").classList.add("open");
+  document.getElementById("obStep1").style.display = "block";
+  document.getElementById("obStep2").style.display = "none";
+  document.getElementById("obStep3").style.display = "none";
+  document.getElementById("obStep4").style.display = "none";
+}
+
+function closeOnboardingModal() {
+  document.getElementById("onboardingModal").classList.remove("open");
+}
+
+function openNoMinesModal() {
+  document.getElementById("noMinesModal").classList.add("open");
+}
+
+async function handleOnboardingMineSubmit(e) {
+  e.preventDefault();
+  const name = document.getElementById("obMineName").value.trim();
+  const sub = document.getElementById("obMineSubsidiary").value.trim();
+  const lat = parseFloat(document.getElementById("obMineLat").value) || null;
+  const lon = parseFloat(document.getElementById("obMineLon").value) || null;
+
+  try {
+    const res = await apiFetch("/api/mines", {
+      method: "POST",
+      body: JSON.stringify({
+        name: name,
+        subsidiary: sub || null,
+        lat: lat,
+        lon: lon,
+      }),
+    });
+    onboardingMineId = res.id;
+    document.getElementById("obStep1").style.display = "none";
+    document.getElementById("obStep2").style.display = "block";
+  } catch (err) {
+    alert("Failed to create mine: " + err.message);
+  }
+}
+
+async function handleOnboardingTunnelSubmit(e) {
+  e.preventDefault();
+  const name = document.getElementById("obTunnelName").value.trim();
+  const code = document.getElementById("obTunnelCode").value.trim();
+  const depth = parseFloat(document.getElementById("obTunnelDepth").value) || null;
+
+  try {
+    await apiFetch(`/api/mines/${onboardingMineId}/tunnels`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: name,
+        code: code,
+        depth_m: depth,
+      }),
+    });
+    document.getElementById("obStep2").style.display = "none";
+    document.getElementById("obStep3").style.display = "block";
+  } catch (err) {
+    alert("Failed to create tunnel: " + err.message);
+  }
+}
+
+async function handleOnboardingGatewaySubmit(e) {
+  e.preventDefault();
+  const name = document.getElementById("obGwName").value.trim();
+  const mac = document.getElementById("obGwMac").value.trim();
+
+  try {
+    const res = await apiFetch(`/api/mines/${onboardingMineId}/gateways`, {
+      method: "POST",
+      body: JSON.stringify({ name: name, mac: mac }),
+    });
+    showGatewayKey(res.api_key);
+    document.getElementById("obStep3").style.display = "none";
+    document.getElementById("obStep4").style.display = "block";
+  } catch (err) {
+    alert("Failed to register gateway: " + err.message);
+  }
+}
+
+async function finishOnboarding() {
+  closeOnboardingModal();
+  await checkAuth();
+  await fetchDashboardData();
+}
+
+// ==========================================
+// MINES, TUNNELS & GATEWAYS MANAGEMENT
+// ==========================================
+
+async function openMinesModal() {
+  document.getElementById("minesModal").classList.add("open");
+  await loadMinesList();
+}
+
+function closeMinesModal() {
+  document.getElementById("minesModal").classList.remove("open");
+}
+
+async function loadMinesList() {
+  const container = document.getElementById("minesListContainer");
+  container.innerHTML = `<div style="font-family:var(--mono); font-size:12px; color:var(--ink-3);">Loading mine sites and hardware topology...</div>`;
+
+  try {
+    const minesRes = await apiFetch("/api/mines");
+    const mines = minesRes.mines || [];
+
+    if (!mines.length) {
+      container.innerHTML = `
+        <div style="font-family:var(--mono); font-size:12px; color:var(--ink-3); padding:16px; border:2px dashed var(--ink-3);">
+          No mine sites created yet. Click "+ Add New Mine" to create one.
+        </div>
+      `;
+      return;
+    }
+
+    let html = "";
+    for (const m of mines) {
+      const tunnelsRes = await apiFetch(`/api/mines/${m.id}/tunnels`).catch(() => ({ tunnels: [] }));
+      const gatewaysRes = await apiFetch(`/api/mines/${m.id}/gateways`).catch(() => ({ gateways: [] }));
+      const tunnels = tunnelsRes.tunnels || [];
+      const gateways = gatewaysRes.gateways || [];
+
+      html += `
+        <div class="zine-box" style="padding:14px; background:var(--paper);">
+          <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid var(--ink); padding-bottom:8px; margin-bottom:10px;">
+            <div>
+              <strong style="font-size:16px;">${m.name}</strong>
+              <span style="font-size:11px; color:var(--ink-3); margin-left:8px;">${m.subsidiary ? "(" + m.subsidiary + ")" : ""} • ${m.method} • Status: ${m.status}</span>
+            </div>
+            <div style="display:flex; gap:6px;">
+              <button class="neo-btn btn-small" onclick="openAddTunnelModal(${m.id})">+ Add Tunnel</button>
+              <button class="neo-btn btn-small btn-primary" onclick="openAddGatewayModal(${m.id})">+ Add Gateway</button>
+            </div>
+          </div>
+
+          <!-- Tunnels sub-list -->
+          <div style="margin-bottom:10px;">
+            <div style="font-family:var(--condensed); font-size:12px; font-weight:700; color:var(--ink-2); margin-bottom:4px;">UNDERGROUND TUNNELS (${tunnels.length}):</div>
+            ${tunnels.length ? `
+              <div style="display:flex; flex-wrap:wrap; gap:8px;">
+                ${tunnels.map(t => `
+                  <span style="background:var(--paper-3); border:1px solid var(--ink); padding:3px 8px; font-family:var(--mono); font-size:11px;">
+                    ${t.name} [<code>${t.code}</code>] · ${t.depth_m != null ? t.depth_m + 'm' : 'Surface'}
+                  </span>
+                `).join("")}
+              </div>
+            ` : `<div style="font-size:11px; color:var(--ink-3); font-style:italic;">No tunnels assigned. Add a tunnel to place sensor nodes.</div>`}
+          </div>
+
+          <!-- Gateways sub-list -->
+          <div>
+            <div style="font-family:var(--condensed); font-size:12px; font-weight:700; color:var(--ink-2); margin-bottom:4px;">HARDWARE GATEWAYS (${gateways.length}):</div>
+            ${gateways.length ? `
+              <div style="display:flex; flex-direction:column; gap:6px;">
+                ${gateways.map(g => `
+                  <div style="display:flex; justify-content:space-between; align-items:center; background:#fff; border:1px solid var(--ink); padding:6px 10px;">
+                    <div>
+                      <strong>${g.name}</strong>
+                      <code style="margin-left:8px;">${g.mac}</code>
+                      <span class="badge-danger-level badge-${g.online ? 'normal' : 'critical'}" style="margin-left:8px; font-size:9px;">
+                        ${g.online ? 'ONLINE' : 'OFFLINE'}
+                      </span>
+                      <span style="font-size:10px; color:var(--ink-3); margin-left:6px;">
+                        ${g.last_seen_at ? 'Seen: ' + new Date(g.last_seen_at).toLocaleTimeString() : 'Never seen'}
+                      </span>
+                      ${!g.active ? '<span style="color:var(--blood); font-weight:700; font-size:10px; margin-left:6px;">[DISABLED]</span>' : ''}
+                    </div>
+                    <div style="display:flex; gap:6px;">
+                      <button class="neo-btn btn-small" onclick="rotateGatewayKey(${g.id})">Rotate Key</button>
+                      <button class="neo-btn btn-small" onclick="toggleGatewayActive(${g.id}, ${g.active})">
+                        ${g.active ? 'Disable' : 'Enable'}
+                      </button>
+                      ${g.node_count === 0 ? `<button class="neo-btn btn-small btn-danger" onclick="deleteGateway(${g.id})">Delete</button>` : ''}
+                    </div>
+                  </div>
+                `).join("")}
+              </div>
+            ` : `<div style="font-size:11px; color:var(--ink-3); font-style:italic;">No hardware gateways registered. Register a gateway to connect nodes.</div>`}
+          </div>
+        </div>
+      `;
+    }
+    container.innerHTML = html;
+  } catch (err) {
+    container.innerHTML = `<div style="color:var(--blood); font-weight:700;">Error loading mines: ${err.message}</div>`;
+  }
+}
+
+// Add Mine Modal
+function openAddMineModal() {
+  document.getElementById("addMineModal").classList.add("open");
+}
+function closeAddMineModal() {
+  document.getElementById("addMineModal").classList.remove("open");
+}
+async function handleCreateMineSubmit(e) {
+  e.preventDefault();
+  const name = document.getElementById("newMineName").value.trim();
+  const sub = document.getElementById("newMineSubsidiary").value.trim();
+  const lat = parseFloat(document.getElementById("newMineLat").value) || null;
+  const lon = parseFloat(document.getElementById("newMineLon").value) || null;
+
+  try {
+    await apiFetch("/api/mines", {
+      method: "POST",
+      body: JSON.stringify({ name: name, subsidiary: sub || null, lat: lat, lon: lon }),
+    });
+    closeAddMineModal();
+    await loadMinesList();
+    await checkAuth();
+    await fetchDashboardData();
+  } catch (err) {
+    alert("Create mine failed: " + err.message);
+  }
+}
+
+// Add Tunnel Modal
+function openAddTunnelModal(mineId) {
+  document.getElementById("tunnelMineId").value = mineId;
+  document.getElementById("addTunnelModal").classList.add("open");
+}
+function closeAddTunnelModal() {
+  document.getElementById("addTunnelModal").classList.remove("open");
+}
+async function handleCreateTunnelSubmit(e) {
+  e.preventDefault();
+  const mineId = document.getElementById("tunnelMineId").value;
+  const name = document.getElementById("newTunnelName").value.trim();
+  const code = document.getElementById("newTunnelCode").value.trim();
+  const depth = parseFloat(document.getElementById("newTunnelDepth").value) || null;
+
+  try {
+    await apiFetch(`/api/mines/${mineId}/tunnels`, {
+      method: "POST",
+      body: JSON.stringify({ name: name, code: code, depth_m: depth }),
+    });
+    closeAddTunnelModal();
+    await loadMinesList();
+  } catch (err) {
+    alert("Create tunnel failed: " + err.message);
+  }
+}
+
+// Add Gateway Modal
+function openAddGatewayModal(mineId) {
+  document.getElementById("gatewayMineId").value = mineId;
+  document.getElementById("addGatewayModal").classList.add("open");
+}
+function closeAddGatewayModal() {
+  document.getElementById("addGatewayModal").classList.remove("open");
+}
+async function handleCreateGatewaySubmit(e) {
+  e.preventDefault();
+  const mineId = document.getElementById("gatewayMineId").value;
+  const name = document.getElementById("newGatewayName").value.trim();
+  const mac = document.getElementById("newGatewayMac").value.trim();
+
+  try {
+    const res = await apiFetch(`/api/mines/${mineId}/gateways`, {
+      method: "POST",
+      body: JSON.stringify({ name: name, mac: mac }),
+    });
+    closeAddGatewayModal();
+    showGatewayKey(res.api_key);
+    await loadMinesList();
+    await fetchDashboardData();
+  } catch (err) {
+    alert("Register gateway failed: " + err.message);
+  }
+}
+
+async function rotateGatewayKey(gwId) {
+  if (!confirm("Rotate this hardware gateway's API key? The existing key will be immediately invalidated and rejected by /api/ingest.")) {
+    return;
+  }
+  try {
+    const res = await apiFetch(`/api/gateways/${gwId}/rotate-key`, { method: "POST" });
+    showGatewayKey(res.api_key);
+    await loadMinesList();
+  } catch (err) {
+    alert("Failed to rotate key: " + err.message);
+  }
+}
+
+async function toggleGatewayActive(gwId, currentActive) {
+  try {
+    await apiFetch(`/api/gateways/${gwId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ active: !currentActive }),
+    });
+    await loadMinesList();
+    await fetchDashboardData();
+  } catch (err) {
+    alert("Toggle active status failed: " + err.message);
+  }
+}
+
+async function deleteGateway(gwId) {
+  if (!confirm("Permanently delete this unattached hardware gateway?")) {
+    return;
+  }
+  try {
+    await apiFetch(`/api/gateways/${gwId}`, { method: "DELETE" });
+    await loadMinesList();
+    await fetchDashboardData();
+  } catch (err) {
+    alert("Delete gateway failed: " + err.message);
   }
 }

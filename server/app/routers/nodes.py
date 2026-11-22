@@ -20,6 +20,7 @@ from app.security.dependencies import (
     get_current_user,
 )
 from app.security.roles import WORKER_ROLES
+from app.services.latest_readings import get_latest_readings
 from app.services.node_serializer import (
     serialize_node,
     serialize_worker_node,
@@ -32,6 +33,7 @@ router = APIRouter(tags=["nodes"])
 @router.get("/api/nodes", response_model=NodesResponse)
 def api_nodes(
     gateway: Optional[str] = None,
+    mine_id: Optional[int] = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -43,11 +45,18 @@ def api_nodes(
     now_ts = time.time()
     allowed_mines = get_allowed_mine_ids(db, user)
 
+    if mine_id is not None:
+        if mine_id not in allowed_mines:
+            raise HTTPException(status_code=404, detail="Mine not found")
+        scoped_mines = [mine_id]
+    else:
+        scoped_mines = allowed_mines
+
     # Scoping: query nodes whose gateway belongs to user's allowed mines
     query = (
         db.query(Node)
         .join(Gateway, Gateway.id == Node.gateway_id)
-        .filter(Gateway.mine_id.in_(allowed_mines))
+        .filter(Gateway.mine_id.in_(scoped_mines))
     )
 
     if gateway:
@@ -61,16 +70,7 @@ def api_nodes(
     nodes = query.order_by(Node.gateway_id, Node.node_no).all()
 
     node_ids = [n.id for n in nodes]
-    latest_map = {}
-    if node_ids:
-        latest_readings = (
-            db.query(Reading)
-            .distinct(Reading.node_id)
-            .filter(Reading.node_id.in_(node_ids))
-            .order_by(Reading.node_id, Reading.ts.desc())
-            .all()
-        )
-        latest_map = {r.node_id: r for r in latest_readings}
+    latest_map = get_latest_readings(db, node_ids)
 
     is_worker = user.role in WORKER_ROLES
 

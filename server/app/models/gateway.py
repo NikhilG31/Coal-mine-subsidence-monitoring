@@ -3,7 +3,7 @@
 Owns the gateways table schema, hardware MAC indexing, and mine site binding.
 Must NOT handle HTTP packet ingestion, unpack binary structs, or verify raw API keys.
 """
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, true
+from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, ForeignKey, Integer, String, Text, true
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -21,6 +21,13 @@ class Gateway(Base):
     active = Column(Boolean, nullable=False, default=True, server_default=true())
     created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     last_seen_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "mac ~ '^[0-9A-F]{2}(:[0-9A-F]{2}){5}$'",
+            name="ck_gateways_mac_canonical",
+        ),
+    )
 
     mine = relationship("Mine", back_populates="gateways")
     creator = relationship("User", foreign_keys=[created_by])

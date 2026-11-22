@@ -68,7 +68,7 @@ def clean_database():
     with engine.connect() as conn:
         conn.execute(
             text(
-                "TRUNCATE TABLE readings, nodes, gateways, user_mines, users, tunnels, "
+                "TRUNCATE TABLE audit_log, readings, nodes, gateways, user_mines, users, tunnels, "
                 "mines, companies RESTART IDENTITY CASCADE;"
             )
         )

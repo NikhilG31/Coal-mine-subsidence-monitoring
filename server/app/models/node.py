@@ -32,6 +32,11 @@ class Node(Base):
     __table_args__ = (
         UniqueConstraint("gateway_id", "node_no", name="uq_nodes_gateway_node_no"),
         CheckConstraint("node_no BETWEEN 1 AND 255", name="ck_nodes_node_no_range"),
+        CheckConstraint(
+            "(tunnel_id IS NULL AND lat IS NULL AND lon IS NULL) OR "
+            "(tunnel_id IS NOT NULL AND lat IS NOT NULL AND lon IS NOT NULL)",
+            name="ck_nodes_placement_complete",
+        ),
     )
 
     gateway = relationship("Gateway", back_populates="nodes")

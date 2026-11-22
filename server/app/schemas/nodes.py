@@ -29,9 +29,12 @@ class WorkerNodeView(BaseModel):
 
 class SuperiorNodeView(BaseModel):
     """Complete diagnostic view model for superiors (manager, safety officer, engineer)."""
+    id: int
+    mine_id: Optional[int] = None
     gateway_mac_address: str
     gateway: str
     node_id: int
+    tunnel_id: Optional[int] = None
     counter: int
     tilt_x: float
     tilt_y: float
@@ -55,4 +58,4 @@ class SuperiorNodeView(BaseModel):
 class NodesResponse(BaseModel):
     """Container schema for the GET /api/nodes endpoint."""
     now: float
-    nodes: List[Union[WorkerNodeView, SuperiorNodeView, dict]]
+    nodes: List[Union[WorkerNodeView, SuperiorNodeView]]
