@@ -52,7 +52,8 @@ coal-mine-subsidence-monitoring/
     │       ├── d84e2a87b91f_step1_hardening.py   # Server defaults, check constraint, index cleanup
     │       ├── e95f3b721a01_step3_placement_and_audit.py # Audit log, mine unique, gateway MAC regex, placement constraint
     │       ├── e252124b61df_step4_alerts_and_token_version.py # Alerts table, partial unique indexes, user token_version
-    │       └── c1506e641433_step5_workers_assignments_shifts.py # Worker profiles, assignments, and GIST exclusion constraint
+    │       ├── c1506e641433_step5_workers_assignments_shifts.py # Worker profiles, assignments, and GIST exclusion constraint
+    │       └── e2b8b74826ca_step6_qr_checkin_headcount_flags.py # QR tokens, check events, check flags, partial unique indexes
     ├── app/                                      # Application package
     │   ├── __init__.py                           # App package root
     │   ├── config.py                             # Centralized environment variable loader (no defaults for DB)
@@ -118,6 +119,7 @@ coal-mine-subsidence-monitoring/
     │   │   ├── audit.py                          # Atomic audit log recorder
     │   │   ├── badge_service.py                  # 256-bit token generation, SHA-256 storage, segno SVG, and revocation
     │   │   ├── checkin_service.py                # Gate scan processing, 5s deduplication, state transitions, shift warning
+    │   │   ├── clock.py                          # Centralized timezone-aware UTC clock provider
     │   │   ├── connectivity.py                   # Single source of truth for node and gateway online calculation
     │   │   ├── flag_clearing.py                  # Manual flag clearance, note audit sanitization, manual 'out' event
     │   │   ├── flag_service.py                   # Background shift evaluation past grace and idempotent check_flag creation
@@ -702,6 +704,7 @@ Radio command sent by gateway over ESP-NOW:
 | **Step 4** | Watchdog and offline detection | **Done** | Pure watchdog cycle and background runner with Postgres advisory lock, alerts table with partial unique open-alert guarantees, offline threshold evaluations, gateway failure suppression, alert ack lifecycle with audit logging, and token_version session invalidation. | 2026-11-22 |
 | **Step 5** | Workers and shifts | **Done** | Manager or Safety Officer assigns worker to a tunnel for a shift; second overlapping shift for the same worker is rejected with 409 naming the clashing shift; the worker sees both upcoming and past shifts under "My hours"; a miner sees only the nodes of their own tunnel (a foreman keeps mine-level view); and the weekly-hours warning appears when the limit is exceeded. | 2026-11-22 |
 | **Step 6** | QR check-in and headcount | **Done** | Badges, scanner page, check events, check flags, headcount panel. Scanning in and out changes headcount; missed check-out raises flag. | 2026-11-22 |
+| **Step 6.5** | Hardening and Phase A Fixes | **Done** | Flag clearing state-lock, back-to-back shift chaining, headcount & flag Distinct ON constant-time optimization, badge 409 conflict handling, company isolation, and centralized UTC clock. | 2026-11-23 |
 | **Step 7** | Incidents and roll call | *Not started* | Manual broadcast, roster snapshot, accounted-for marking, buzzer commands to nodes. Incident lists who is unaccounted for. | — |
 | **Step 8** | Worker reports and SOS | *Not started* | Report form, inbox, status flow, node SOS button and SOS packet. Report moves through workflow; button press shows as SOS report within seconds. | — |
 | **Step 9** | Mine profile and output tracking | *Not started* | Profile fields, contacts, plan vs actual. Mine page shows all five profile groups. | — |
@@ -734,6 +737,54 @@ The following firmware features from Step 4 require modifying packet types or fi
 ---
 
 ## 12. Changelog
+
+### 2026-11-23 - Step 6.5: Hardening
+- **Flag Clearance State Verification & Headcount Protection (A1)**:
+  - In `services/flag_clearing.py`: `clear_flag` locks the worker row (`SELECT ... FOR UPDATE on users`) matching the scan path.
+  - Inserts manual `"out"` check event ONLY if the worker's latest check event is `"in"` on the flagged assignment's tunnel and not on a later shift.
+  - If worker already checked out, is inside a different tunnel, or is on a later shift, clears the flag with note without inserting an out event or touching live headcount.
+- **Back-to-Back Shift Chaining (A2)**:
+  - In `services/flag_service.py`: Consecutive shifts for the same worker in the same tunnel with gap $\le$ `CHECKOUT_GRACE_MIN` are evaluated as a single shift chain.
+  - Evaluates flag against the last shift of the chain: raises flag only when the last shift's `ends_at + CHECKOUT_GRACE_MIN <= now`, worker's latest event is `"in"` on that tunnel, and event's `scanned_at` is within `[chain_first_starts_at - CHECKIN_EARLY_MIN, last_ends_at)`.
+  - Shifts are never flagged while the worker has an active shift in that tunnel.
+- **Headcount Query Optimization & Pydantic Response Model (A3)**:
+  - In `services/headcount.py`: Restricts evaluation strictly to workers belonging to the requested tunnels' mines with a single `DISTINCT ON` query and zero per-user queries (constant-time query count verified with tests for 10 vs 100 workers).
+  - Updated `GET /api/headcount` response model to `HeadcountResponse(tunnels=[TunnelHeadcountItem(...)])` with inside counts, scheduled counts, and workers list.
+  - Scoped to foreman's active tunnel (others 403/404); updated frontend `static/headcount_flags.js` to consume the new response schema.
+- **Flag Cycle Pre-Filtering (A4)**:
+  - In `services/flag_service.py`: Candidate workers' latest check event queried via a single `DISTINCT ON` subquery; pre-filters candidate shifts in SQL where the worker's latest event is `"in"`, ensuring flag evaluation cost does not grow with normally closed shifts.
+- **Scan Validation, UnknownBadge Handling & Schema Cleanup (A5)**:
+  - In `services/checkin_service.py`: Worker must belong (`user_mines`) to the scanned tunnel's mine (raising 404 otherwise).
+  - Introduced dedicated `UnknownBadge(CheckInError)` exception subclass; rate limiting catches `UnknownBadge` directly without fragile string matching.
+  - Removed unused `note` field from `ManualScanRequest` with `extra="forbid"`.
+- **Badge Concurrency & Revocation Scoping (A6)**:
+  - In `services/badge_service.py`: `issue_badge` acquires row lock on `User`, flushes old token revocation before inserting new token, and catches `IntegrityError` on `uq_qr_tokens_one_active` returning HTTP 409 `{"code": "badge_busy"}`.
+  - `revoke_badge` strictly enforces company isolation inside the domain service (404 otherwise).
+- **Check Flags Validation & Pagination (A7)**:
+  - In `routers/check_flags.py`: Validated `status` with regex pattern `^(open|all)$`, added `limit` (default 200, max 500) and `offset` (default 0).
+  - Documented flat profile object in `routers/me.py`.
+- **Centralized Timezone-Aware UTC Clock (A8)**:
+  - Created `services/clock.py` exporting `utcnow()` providing timezone-aware UTC datetime.
+  - Replaced all direct `datetime.datetime.now(...)` invocations across routers, services, and security.
+  - Added `freeze_clock` test fixture monkeypatching `app.services.clock.utcnow`; removed all patching of the stdlib `datetime` module.
+- **Step 6 Hardening Tests & Invariant Verification (A9)**:
+  - Added tests for identical 404 responses across revoked, deactivated, and unknown badges (`test_revoked_and_deactivated_badges_identical_404`).
+  - Added scanner mine scoping and foreman cross-tunnel 403 tests (`test_scanner_mine_scoping_and_foreman_restrictions`).
+  - Added warning verification for scans outside scheduled shifts (`test_no_active_shift_warning`).
+  - Added early check-in grace (`CHECKIN_EARLY_MIN`) and overdue boundary (`CHECK_FLAG_OVERDUE_HOURS`) tests (`test_early_checkin_grace_and_flag_boundaries`).
+  - Added late scan-out auto-clearing test (`test_late_scan_out_autoclears_flag`).
+  - Added foreman own-tunnel flag clearance restriction, audit row note sanitization, and `cmb_` string leakage checks (`test_flag_clearing_scoping_and_audit_privacy`).
+  - Added all three flag-clearing state cases without manual out events (`test_flag_clearing_three_cases`).
+  - Added back-to-back shift chaining test (`test_back_to_back_shifts_chaining`).
+  - Added concurrent badge issuance test (`test_concurrent_badge_issuance`).
+  - Added constant query count test for 10 vs 100 workers (`test_headcount_constant_query_count`).
+  - Added foreman headcount scope and company isolation test (`test_foreman_headcount_scope_and_company_isolation`).
+  - Added check flags status validation and pagination test (`test_check_flags_validation_and_pagination`).
+- **Alembic Downgrade/Upgrade Invariant (A10)**:
+  - Wrapped `alembic downgrade -1` in a `try...finally` block ensuring `command.upgrade(cfg, "head")` executes even on assertion failures, protecting the shared test database.
+- **Automated Verification**:
+  - Full test suite: 104 passed in pytest (0 failures).
+  - `alembic check` clean with zero schema drift.
 
 ### 2026-11-22 - Step 6: QR Badges, Gate Check-In/Out, Live Headcount, and Check Flags
 - **Database Migration (`e2b8b74826ca`)**:

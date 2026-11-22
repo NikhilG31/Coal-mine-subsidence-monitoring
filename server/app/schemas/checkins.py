@@ -38,7 +38,6 @@ class ManualScanRequest(BaseModel):
     user_id: int
     direction: str = Field(..., pattern="^(in|out)$")
     tunnel_id: Optional[int] = None
-    note: Optional[str] = None
 
 
 class TunnelSummaryView(BaseModel):
@@ -88,13 +87,15 @@ class HeadcountWorkerItem(BaseModel):
 
 class TunnelHeadcountItem(BaseModel):
     tunnel_id: int
+    tunnel_name: str
+    mine_id: int
     inside: int
     scheduled_now: int
     workers: List[HeadcountWorkerItem] = []
 
 
 class HeadcountResponse(BaseModel):
-    headcount: Dict[str, TunnelHeadcountItem]
+    tunnels: List[TunnelHeadcountItem]
 
 
 class AssignmentFlagSummary(BaseModel):

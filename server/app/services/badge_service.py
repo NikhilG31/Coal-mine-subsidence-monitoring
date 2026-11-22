@@ -8,12 +8,14 @@ import hashlib
 import secrets
 from typing import Optional, Tuple
 import segno
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.qr_token import QRToken
 from app.models.user import User
 from app.security.roles import ROLE_FOREMAN, ROLE_MINER
 from app.services.audit import record_audit
+from app.services import clock
 
 
 class BadgeError(Exception):
@@ -33,16 +35,21 @@ def issue_badge(
 ) -> Tuple[str, str, QRToken]:
     """Issues a new QR badge for a worker and revokes previous active tokens.
 
-    Generates a secure 256-bit token ('cmb_' + token_urlsafe(32)), stores its SHA-256 digest,
-    renders an inline SVG QR code, and records an audit log without secret exposure.
+    Locks the worker row with SELECT ... FOR UPDATE. Flushes after revoking old token
+    and before inserting new one. Converts IntegrityError on uq_qr_tokens_one_active into 409 badge_busy.
     """
-    worker = db.query(User).filter(User.id == worker_id, User.company_id == actor.company_id).first()
+    worker = (
+        db.query(User)
+        .filter(User.id == worker_id, User.company_id == actor.company_id)
+        .with_for_update()
+        .first()
+    )
     if not worker:
         raise BadgeError("Worker not found", status_code=404)
     if worker.role not in (ROLE_FOREMAN, ROLE_MINER) or not worker.active:
         raise BadgeError("Badge can only be issued to an active foreman or miner", status_code=400)
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = clock.utcnow()
 
     # Revoke any currently active badges for this worker
     active_tokens = (
@@ -53,6 +60,9 @@ def issue_badge(
     for tok in active_tokens:
         tok.revoked_at = now
         tok.revoked_by = actor.id
+
+    # Flush after revoking old token and before inserting new one
+    db.flush()
 
     # Generate random 256-bit badge token
     plaintext_token = f"cmb_{secrets.token_urlsafe(32)}"
@@ -65,6 +75,12 @@ def issue_badge(
         issued_by=actor.id,
     )
     db.add(qr_token)
+
+    try:
+        with db.begin_nested():
+            db.flush()
+    except IntegrityError:
+        raise BadgeError("Badge operation in progress", status_code=409, code="badge_busy")
 
     # Render QR SVG using segno
     qr = segno.make(plaintext_token, error="m")
@@ -91,8 +107,19 @@ def revoke_badge(
     actor: User,
     worker_id: int,
 ) -> int:
-    """Revokes active badges for a worker and records an audit entry."""
-    now = datetime.datetime.now(datetime.timezone.utc)
+    """Revokes active badges for a worker and records an audit entry.
+
+    Verifies the worker belongs to the actor's company inside the service (404 otherwise).
+    """
+    worker = (
+        db.query(User)
+        .filter(User.id == worker_id, User.company_id == actor.company_id)
+        .first()
+    )
+    if not worker or worker.role not in (ROLE_FOREMAN, ROLE_MINER):
+        raise BadgeError("Worker not found", status_code=404)
+
+    now = clock.utcnow()
     active_tokens = (
         db.query(QRToken)
         .filter(QRToken.user_id == worker_id, QRToken.revoked_at.is_(None))

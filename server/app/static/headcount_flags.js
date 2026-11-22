@@ -142,23 +142,24 @@
     if (!container) return;
     try {
       const res = await window.apiFetch("/api/headcount");
-      const tunnelIds = Object.keys(res || {});
-      if (tunnelIds.length === 0) {
+      const tunnels = (res && res.tunnels) ? res.tunnels : [];
+      if (tunnels.length === 0) {
         container.innerHTML = `<div style="font-size:12px; color:var(--ink-3); padding:10px;">No tunnel headcount available.</div>`;
         return;
       }
 
-      container.innerHTML = tunnelIds.map(tid => {
-        const item = res[tid];
+      container.innerHTML = tunnels.map(item => {
         const workers = item.workers || [];
         const workerList = workers.length > 0
           ? workers.map(w => `<div style="font-size:11px; padding:2px 0;">• ${safeHtml(w.full_name)} (<code>${safeHtml(w.employee_no || "N/A")}</code>) - In at ${new Date(w.scanned_at).toLocaleTimeString()}</div>`).join("")
           : `<div style="font-size:11px; color:var(--ink-3);">No personnel currently inside.</div>`;
 
+        const titleText = item.tunnel_name ? `${safeHtml(item.tunnel_name)} (#${item.tunnel_id})` : `TUNNEL #${item.tunnel_id}`;
+
         return `
           <div class="zine-box" style="padding:10px; margin-bottom:10px; background:#fff;">
             <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #ddd; padding-bottom:4px; margin-bottom:6px;">
-              <h5 style="margin:0; font-family:var(--condensed);">TUNNEL #${item.tunnel_id}</h5>
+              <h5 style="margin:0; font-family:var(--condensed);">${titleText}</h5>
               <div style="font-size:12px;">
                 Inside: <strong style="color:var(--green-1); font-size:14px;">${item.inside}</strong> | Scheduled: <strong>${item.scheduled_now}</strong>
               </div>

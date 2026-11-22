@@ -15,6 +15,7 @@ from app.models.user import User, UserMine
 from app.security.dependencies import get_allowed_mine_ids
 from app.security.roles import ROLE_FOREMAN, ROLE_MINER
 from app.services.audit import record_audit
+from app.services import clock
 from app.services.weekly_hours import weekly_hours_warnings
 
 
@@ -232,7 +233,7 @@ def delete_shift(
 ) -> None:
     """Deletes an upcoming shift. Started shifts cannot be deleted."""
     if now is None:
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = clock.utcnow()
     elif now.tzinfo is None:
         now = now.replace(tzinfo=datetime.timezone.utc)
 

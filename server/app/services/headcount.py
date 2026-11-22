@@ -11,8 +11,9 @@ from sqlalchemy.orm import Session, joinedload
 from app.models.assignment import Assignment
 from app.models.check_event import CheckEvent
 from app.models.tunnel import Tunnel
-from app.models.user import User
+from app.models.user import User, UserMine
 from app.models.worker_profile import WorkerProfile
+from app.services import clock
 
 
 def get_latest_check_events(
@@ -57,11 +58,33 @@ def inside_now(
     """Returns workers currently inside the given tunnels mapped by tunnel_id.
 
     A worker is inside a tunnel iff their latest event has direction 'in'.
+    Restricts evaluation to workers who belong (user_mines) to the mines of the requested tunnels.
     """
     if not tunnel_ids:
         return {}
 
-    latest_events = get_latest_check_events(db)
+    tunnels = db.query(Tunnel).filter(Tunnel.id.in_(tunnel_ids)).all()
+    mine_ids = list({t.mine_id for t in tunnels})
+    if not mine_ids:
+        return {tid: [] for tid in tunnel_ids}
+
+    allowed_worker_ids = (
+        db.query(UserMine.user_id)
+        .filter(UserMine.mine_id.in_(mine_ids))
+        .distinct()
+        .subquery()
+    )
+
+    latest_events = (
+        db.query(CheckEvent)
+        .distinct(CheckEvent.user_id)
+        .options(
+            joinedload(CheckEvent.user).joinedload(User.worker_profile),
+        )
+        .filter(CheckEvent.user_id.in_(db.query(allowed_worker_ids.c.user_id)))
+        .order_by(CheckEvent.user_id, CheckEvent.scanned_at.desc(), CheckEvent.id.desc())
+        .all()
+    )
     result: Dict[int, List[Dict[str, Any]]] = {tid: [] for tid in tunnel_ids}
 
     for ev in latest_events:
@@ -88,15 +111,18 @@ def headcount_by_tunnel(
     """Calculates live headcount and active scheduled worker counts per tunnel.
 
     Returns:
-        Dict[tunnel_id, {"inside": int, "scheduled_now": int, "workers": List[dict]}]
+        Dict[tunnel_id, {"tunnel_id": int, "tunnel_name": str, "mine_id": int, "inside": int, "scheduled_now": int, "workers": List[dict]}]
     """
     if now is None:
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = clock.utcnow()
     elif now.tzinfo is None:
         now = now.replace(tzinfo=datetime.timezone.utc)
 
     if not tunnel_ids:
         return {}
+
+    tunnels = db.query(Tunnel).filter(Tunnel.id.in_(tunnel_ids)).all()
+    tunnels_map = {t.id: t for t in tunnels}
 
     # 1. Inside workers by tunnel
     inside_workers = inside_now(db, tunnel_ids)
@@ -116,9 +142,14 @@ def headcount_by_tunnel(
 
     headcount_map = {}
     for tid in tunnel_ids:
+        t = tunnels_map.get(tid)
+        t_name = t.name if t else f"Tunnel {tid}"
+        m_id = t.mine_id if t else 0
         workers = inside_workers.get(tid, [])
         headcount_map[tid] = {
             "tunnel_id": tid,
+            "tunnel_name": t_name,
+            "mine_id": m_id,
             "inside": len(workers),
             "scheduled_now": scheduled_map.get(tid, 0),
             "workers": workers,

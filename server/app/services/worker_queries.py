@@ -15,6 +15,7 @@ from app.models.user import User, UserMine
 from app.models.worker_profile import WorkerProfile
 from app.security.dependencies import get_allowed_mine_ids
 from app.security.roles import ROLE_FOREMAN, ROLE_MANAGER, ROLE_MINER
+from app.services import clock
 from app.services.tunnel_scope import get_current_tunnel_id
 
 
@@ -151,7 +152,7 @@ def get_worker_detail(
 ) -> Dict[str, Any]:
     """Returns comprehensive worker profile and recent shift history."""
     if now is None:
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = clock.utcnow()
     elif now.tzinfo is None:
         now = now.replace(tzinfo=datetime.timezone.utc)
 

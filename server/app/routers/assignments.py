@@ -24,6 +24,7 @@ from app.security.dependencies import (
     require_role,
     security_logger,
 )
+from app.services import clock
 from app.security.roles import (
     ROLE_MANAGER,
     SUPERIOR_ROLES,
@@ -239,7 +240,7 @@ def api_list_assignments(
 
     if from_time is None and to_time is None:
         # Default window: now - 7 days to now + 30 days
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = clock.utcnow()
         from_dt = now - datetime.timedelta(days=7)
         to_dt = now + datetime.timedelta(days=30)
         query = query.filter(Assignment.ends_at > from_dt, Assignment.starts_at < to_dt)

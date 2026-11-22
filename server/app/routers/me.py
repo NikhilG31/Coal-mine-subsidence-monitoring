@@ -15,6 +15,7 @@ from app.models.user import User
 from app.schemas.workers import WorkerShiftsResponse, _validate_tz_aware
 from app.security.dependencies import get_current_user
 from app.security.roles import ROLE_FOREMAN, ROLE_MINER
+from app.services import clock
 from app.services.tunnel_scope import get_current_tunnel_id
 
 router = APIRouter(tags=["me"])
@@ -76,12 +77,18 @@ def api_get_my_profile(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Returns caller's own worker profile if worker (foreman/miner), otherwise an empty object."""
+    """Returns caller's own worker profile as a flat object if worker (foreman/miner), otherwise an empty object {}.
+
+    Returns a flat object:
+    {"user_id": int, "employee_no": str, "phone": str, "emergency_contact_name": str,
+     "emergency_contact_phone": str, "joined_on": str, "current_tunnel": dict|null}
+    """
     if user.role not in (ROLE_FOREMAN, ROLE_MINER):
         return {}
 
+    now = clock.utcnow()
     profile = user.worker_profile
-    curr_tid = get_current_tunnel_id(db, user.id)
+    curr_tid = get_current_tunnel_id(db, user.id, now=now)
     curr_tunnel = None
     if curr_tid:
         t = db.query(Tunnel).filter(Tunnel.id == curr_tid).first()

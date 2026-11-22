@@ -29,6 +29,7 @@ from app.security.dependencies import (
 )
 from app.security.roles import SUPERIOR_ROLES, WORKER_ROLES
 from app.services.audit import record_audit
+from app.services import clock
 from app.services.latest_readings import get_latest_readings
 from app.services.node_placement import (
     PLACED_SQL_EXPRESSION,
@@ -188,7 +189,7 @@ def api_place_node(
             detail="Tunnel does not belong to the same mine as the node's gateway",
         )
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = clock.utcnow()
     node.tunnel_id = req.tunnel_id
     node.lat = req.lat
     node.lon = req.lon

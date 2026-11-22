@@ -6,6 +6,7 @@ Must NOT connect to development or production databases.
 """
 import os
 import sys
+import datetime
 from pathlib import Path
 import pytest
 from dotenv import load_dotenv
@@ -94,3 +95,15 @@ def db():
 def client():
     """Provides a FastAPI test client bound to the application."""
     return TestClient(app)
+
+
+@pytest.fixture
+def freeze_clock(monkeypatch):
+    """Freezes app.services.clock.utcnow to a specified datetime without patching datetime module."""
+    def _freeze(frozen_dt: datetime.datetime):
+        if frozen_dt.tzinfo is None:
+            frozen_dt = frozen_dt.replace(tzinfo=datetime.timezone.utc)
+        monkeypatch.setattr("app.services.clock.utcnow", lambda: frozen_dt)
+        return frozen_dt
+
+    return _freeze

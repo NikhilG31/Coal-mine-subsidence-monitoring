@@ -6,6 +6,7 @@ Must NOT perform low-level shift arithmetic, bypass mine scoping, or leak phone 
 import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -22,6 +23,7 @@ from app.security.dependencies import require_role, security_logger
 from app.security.roles import ROLE_FOREMAN, ROLE_MANAGER, ROLE_MINER, SUPERIOR_ROLES
 from app.services.audit import record_audit
 from app.services.badge_service import BadgeError, issue_badge, revoke_badge
+from app.services import clock
 from app.services.tunnel_scope import get_current_tunnel_id
 from app.services.worker_queries import (
     WorkerQueryError,
@@ -180,7 +182,10 @@ def api_issue_worker_badge(
     try:
         plaintext_token, svg, qr_token = issue_badge(db, user, worker_id)
     except BadgeError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+        content = {"detail": exc.detail}
+        if exc.code:
+            content["code"] = exc.code
+        return JSONResponse(status_code=exc.status_code, content=content)
 
     response.headers["Cache-Control"] = "no-store"
     worker = qr_token.user
@@ -204,7 +209,7 @@ def api_revoke_worker_badge(
     db: Session = Depends(get_db),
 ):
     """Revokes active QR badges for a worker (Manager, or Foreman for their current tunnel)."""
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = clock.utcnow()
     if user.role == ROLE_FOREMAN:
         foreman_tid = get_current_tunnel_id(db, user.id, now)
         if not foreman_tid:
@@ -220,5 +225,11 @@ def api_revoke_worker_badge(
         if not target or target.role not in (ROLE_FOREMAN, ROLE_MINER):
             raise HTTPException(status_code=404, detail="Worker not found")
 
-    revoked_count = revoke_badge(db, user, worker_id)
+    try:
+        revoked_count = revoke_badge(db, user, worker_id)
+    except BadgeError as exc:
+        content = {"detail": exc.detail}
+        if exc.code:
+            content["code"] = exc.code
+        return JSONResponse(status_code=exc.status_code, content=content)
     return {"revoked": revoked_count}

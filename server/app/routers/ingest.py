@@ -13,6 +13,7 @@ from app.config import ALLOW_UNKEYED_INGEST
 from app.database import SessionLocal
 from app.models.gateway import Gateway
 from app.security.dependencies import security_logger
+from app.services import clock
 from app.services.gateway_keys import verify_key
 from app.services.ingest_service import process_telemetry_packet
 from app.services.packet_codec import parse_gateway_packet
@@ -32,7 +33,7 @@ def _authenticate_and_ingest(
     # 1. Parsing validation (must be 38 bytes and valid structure)
     packet_data = parse_gateway_packet(body)
     gateway_mac = packet_data["gateway_mac"]
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = clock.utcnow()
 
     with SessionLocal() as db:
         # 2. Gateway resolution

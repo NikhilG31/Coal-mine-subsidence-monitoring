@@ -16,6 +16,7 @@ from app.models.tunnel import Tunnel
 from app.models.user import User
 from app.schemas.checkins import (
     CheckEventsListResponse,
+    HeadcountResponse,
     ManualScanRequest,
     ScanRequest,
     ScanResponse,
@@ -39,9 +40,11 @@ from app.security.roles import (
 )
 from app.services.checkin_service import (
     CheckInError,
+    UnknownBadge,
     record_manual,
     record_scan,
 )
+from app.services import clock
 from app.services.headcount import headcount_by_tunnel
 from app.services.tunnel_scope import get_current_tunnel_id
 
@@ -80,9 +83,15 @@ def api_record_scan(
     try:
         result = record_scan(db, user, req.token, req.direction, tunnel_id=req.tunnel_id)
         return result
+    except UnknownBadge as exc:
+        record_unknown_badge_failure(user.id)
+        content = {"detail": exc.detail}
+        if exc.code:
+            content["code"] = exc.code
+        if exc.extra:
+            content.update(exc.extra)
+        return JSONResponse(status_code=exc.status_code, content=content)
     except CheckInError as exc:
-        if exc.status_code == 404 and "Badge not recognised" in exc.detail:
-            record_unknown_badge_failure(user.id)
         content = {"detail": exc.detail}
         if exc.code:
             content["code"] = exc.code
@@ -115,7 +124,6 @@ def api_record_manual(
             user_id=req.user_id,
             direction=req.direction,
             tunnel_id=req.tunnel_id,
-            note=req.note,
         )
         return result
     except CheckInError as exc:
@@ -135,7 +143,7 @@ def api_list_checkins(
     db: Session = Depends(get_db),
 ):
     """Lists recent check-in and check-out events scoped to permitted tunnels."""
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = clock.utcnow()
     allowed_mines = get_allowed_mine_ids(db, user)
 
     if user.role == ROLE_FOREMAN:
@@ -201,20 +209,20 @@ def api_list_checkins(
     return {"events": items}
 
 
-@router.get("/api/headcount")
+@router.get("/api/headcount", response_model=HeadcountResponse)
 def api_get_headcount(
     mine_id: Optional[int] = None,
     user: User = Depends(require_role(*SCANNER_ROLES)),
     db: Session = Depends(get_db),
-) -> Dict[int, Any]:
+):
     """Returns real-time underground tunnel headcount and active scheduled worker counts."""
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = clock.utcnow()
     allowed_mines = get_allowed_mine_ids(db, user)
 
     if user.role == ROLE_FOREMAN:
         curr_tid = get_current_tunnel_id(db, user.id, now)
         if not curr_tid:
-            return {}
+            return {"tunnels": []}
         target_tunnel_ids = [curr_tid]
     else:
         if mine_id is not None:
@@ -226,4 +234,5 @@ def api_get_headcount(
         tunnels = db.query(Tunnel).filter(Tunnel.mine_id.in_(target_mines)).all()
         target_tunnel_ids = [t.id for t in tunnels]
 
-    return headcount_by_tunnel(db, target_tunnel_ids, now=now)
+    headcount_map = headcount_by_tunnel(db, target_tunnel_ids, now=now)
+    return {"tunnels": list(headcount_map.values())}

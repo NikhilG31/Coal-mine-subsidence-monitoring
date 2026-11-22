@@ -18,6 +18,7 @@ from app.models.user import User, UserMine
 from app.security.dependencies import get_allowed_mine_ids
 from app.security.roles import ROLE_FOREMAN, ROLE_MINER
 from app.services.audit import record_audit
+from app.services import clock
 from app.services.headcount import get_worker_latest_event
 from app.services.tunnel_scope import get_current_tunnel_id
 
@@ -37,6 +38,13 @@ class CheckInError(Exception):
         self.status_code = status_code
         self.code = code
         self.extra = extra or {}
+
+
+class UnknownBadge(CheckInError):
+    """Raised when a badge token is unrecognized, revoked, or belongs to an inactive worker."""
+
+    def __init__(self, detail: str = "Badge not recognised", status_code: int = 404, code: Optional[str] = None):
+        super().__init__(detail=detail, status_code=status_code, code=code)
 
 
 def _resolve_tunnel(
@@ -68,14 +76,13 @@ def _resolve_tunnel(
 
 def _validate_worker_mine_membership(
     db: Session,
-    scanner: User,
+    tunnel: Tunnel,
     worker: User,
 ) -> None:
-    """Asserts worker belongs to at least one mine accessible to scanner."""
-    scanner_mine_ids = get_allowed_mine_ids(db, scanner)
+    """Asserts worker belongs to the tunnel's mine."""
     shares = (
         db.query(UserMine)
-        .filter(UserMine.user_id == worker.id, UserMine.mine_id.in_(scanner_mine_ids))
+        .filter(UserMine.user_id == worker.id, UserMine.mine_id == tunnel.mine_id)
         .first()
     )
     if not shares:
@@ -206,7 +213,7 @@ def record_scan(
 ) -> Dict[str, Any]:
     """Processes a QR badge scan at the tunnel entrance or exit."""
     if now is None:
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = clock.utcnow()
     elif now.tzinfo is None:
         now = now.replace(tzinfo=datetime.timezone.utc)
 
@@ -217,18 +224,18 @@ def record_scan(
     qr_token = (
         db.query(QRToken)
         .options(joinedload(QRToken.user).joinedload(User.worker_profile))
-        .filter(QRToken.token_hash == token_hash, QRToken.revoked_at.is_(None))
+        .filter(QRToken.token_hash == token_hash)
         .first()
     )
-    if not qr_token or not qr_token.user or not qr_token.user.active:
-        raise CheckInError("Badge not recognised", status_code=404)
+    if not qr_token or qr_token.revoked_at is not None or not qr_token.user or not qr_token.user.active:
+        raise UnknownBadge("Badge not recognised", status_code=404)
 
     worker = qr_token.user
     if worker.role not in (ROLE_FOREMAN, ROLE_MINER):
-        raise CheckInError("Badge not recognised", status_code=404)
+        raise UnknownBadge("Badge not recognised", status_code=404)
 
-    _validate_worker_mine_membership(db, scanner, worker)
     tunnel = _resolve_tunnel(db, scanner, tunnel_id, now)
+    _validate_worker_mine_membership(db, tunnel, worker)
 
     return _process_check_event(db, scanner, worker, tunnel, direction, "qr", now)
 
@@ -239,12 +246,11 @@ def record_manual(
     user_id: int,
     direction: str,
     tunnel_id: Optional[int] = None,
-    note: Optional[str] = None,
     now: Optional[datetime.datetime] = None,
 ) -> Dict[str, Any]:
     """Manually records a check-in or check-out event when badge is lost or unavailable."""
     if now is None:
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = clock.utcnow()
     elif now.tzinfo is None:
         now = now.replace(tzinfo=datetime.timezone.utc)
 
@@ -260,7 +266,7 @@ def record_manual(
     if not worker or not worker.active or worker.role not in (ROLE_FOREMAN, ROLE_MINER):
         raise CheckInError("Worker not found", status_code=404)
 
-    _validate_worker_mine_membership(db, actor, worker)
     tunnel = _resolve_tunnel(db, actor, tunnel_id, now)
+    _validate_worker_mine_membership(db, tunnel, worker)
 
     return _process_check_event(db, actor, worker, tunnel, direction, "manual", now)

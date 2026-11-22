@@ -13,7 +13,9 @@ Verifies:
 10. Alembic migration downgrade -1 and upgrade head reversibility.
 """
 import datetime
+import os
 import time
+from pathlib import Path
 from alembic import command
 from alembic.config import Config
 import pytest
@@ -789,9 +791,14 @@ def test_done_when_end_to_end_journey(client, db):
 
 def test_alembic_downgrade_and_upgrade_clean():
     """B1 & B6: Verify alembic downgrade -1 and upgrade head run cleanly without error."""
-    alembic_cfg = Config("alembic.ini")
-    command.downgrade(alembic_cfg, "-1")
-    command.upgrade(alembic_cfg, "head")
+    server_dir = Path(__file__).resolve().parent.parent
+    alembic_ini_path = server_dir / "alembic.ini"
+    alembic_cfg = Config(str(alembic_ini_path))
+    alembic_cfg.set_main_option("sqlalchemy.url", os.environ["DATABASE_URL"])
+    try:
+        command.downgrade(alembic_cfg, "-1")
+    finally:
+        command.upgrade(alembic_cfg, "head")
 
 
 # =============================================================================

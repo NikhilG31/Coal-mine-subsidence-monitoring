@@ -16,6 +16,7 @@ from app.models.user import User
 from app.security.dependencies import get_allowed_mine_ids, require_role
 from app.security.roles import SUPERIOR_ROLES
 from app.services.audit import record_audit
+from app.services import clock
 
 router = APIRouter(tags=["alerts"])
 
@@ -107,7 +108,7 @@ def api_acknowledge_alert(
         )
 
     if alert.acknowledged_at is None:
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = clock.utcnow()
         alert.acknowledged_at = now
         alert.acknowledged_by = user.id
         record_audit(

@@ -30,6 +30,7 @@ from app.security.roles import (
     ROLE_MANAGER,
     ROLE_SAFETY_OFFICER,
 )
+from app.services import clock
 from app.services.flag_clearing import FlagClearError, clear_flag
 from app.services.tunnel_scope import get_current_tunnel_id
 
@@ -40,14 +41,16 @@ SCANNER_ROLES = (ROLE_MANAGER, ROLE_SAFETY_OFFICER, ROLE_ENGINEER, ROLE_FOREMAN)
 
 @router.get("/api/check-flags", response_model=CheckFlagsListResponse)
 def api_list_check_flags(
-    status_filter: str = Query(default="open", alias="status"),
+    status_filter: str = Query(default="open", alias="status", pattern="^(open|all)$"),
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     mine_id: Optional[int] = None,
     tunnel_id: Optional[int] = None,
     user: User = Depends(require_role(*SCANNER_ROLES)),
     db: Session = Depends(get_db),
 ):
     """Lists shift check-out exception flags scoped to caller's permitted tunnels."""
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = clock.utcnow()
     allowed_mines = get_allowed_mine_ids(db, user)
 
     if user.role == ROLE_FOREMAN:
@@ -92,7 +95,12 @@ def api_list_check_flags(
     if status_filter == "open":
         query = query.filter(CheckFlag.cleared_at.is_(None))
 
-    flags = query.order_by(CheckFlag.raised_at.desc(), CheckFlag.id.desc()).all()
+    flags = (
+        query.order_by(CheckFlag.raised_at.desc(), CheckFlag.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
 
     overdue_cutoff = now - datetime.timedelta(hours=CHECK_FLAG_OVERDUE_HOURS)
     items = []
@@ -139,7 +147,7 @@ def api_clear_check_flag(
     db: Session = Depends(get_db),
 ):
     """Clears an open check flag with a manual review note and corrects tunnel headcount."""
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = clock.utcnow()
     allowed_mines = get_allowed_mine_ids(db, user)
 
     flag = (

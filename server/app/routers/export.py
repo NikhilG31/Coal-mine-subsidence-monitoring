@@ -19,6 +19,7 @@ from app.security.dependencies import (
     require_role,
 )
 from app.security.roles import SUPERIOR_ROLES
+from app.services import clock
 from app.services.hazard_classifier import (
     LEVEL_INT_TO_STR,
     get_hazard_details,
@@ -147,7 +148,7 @@ def export_xlsx(
 
     buf = io.BytesIO()
     wb.save(buf)
-    filename = f"mine_subsidence_telemetry_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    filename = f"mine_subsidence_telemetry_{clock.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
     return Response(
         buf.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

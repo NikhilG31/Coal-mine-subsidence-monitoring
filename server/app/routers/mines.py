@@ -26,6 +26,7 @@ from app.security.dependencies import (
 )
 from app.security.roles import ROLE_MANAGER
 from app.services.audit import record_audit
+from app.services import clock
 from app.services.connectivity import gateway_is_online
 from app.services.gateway_keys import generate_key, hash_key
 
@@ -333,7 +334,7 @@ def api_get_mine_gateways(
         .order_by(Gateway.id.asc())
         .all()
     )
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = clock.utcnow()
     out = []
     for g in gateways:
         online = gateway_is_online(g.last_seen_at, now)

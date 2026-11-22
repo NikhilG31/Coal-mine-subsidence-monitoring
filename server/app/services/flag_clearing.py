@@ -7,10 +7,12 @@ import datetime
 from typing import Optional
 from sqlalchemy.orm import Session, joinedload
 
+from app.models.assignment import Assignment
 from app.models.check_event import CheckEvent
 from app.models.check_flag import CheckFlag
 from app.models.user import User
 from app.services.audit import record_audit
+from app.services import clock
 
 
 class FlagClearError(Exception):
@@ -36,7 +38,7 @@ def clear_flag(
     Audits the operation recording only the flag ID, strictly omitting note text.
     """
     if now is None:
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = clock.utcnow()
     elif now.tzinfo is None:
         now = now.replace(tzinfo=datetime.timezone.utc)
 
@@ -56,22 +58,56 @@ def clear_flag(
             code="already_cleared",
         )
 
-    # 3. Insert manual 'out' event for the assignment's tunnel
+    # 3. Assignment lookup and worker row lock
     asgn = flag.assignment
     if not asgn:
         raise FlagClearError("Assignment associated with check flag not found", status_code=404)
 
-    out_event = CheckEvent(
-        user_id=flag.user_id,
-        tunnel_id=asgn.tunnel_id,
-        direction="out",
-        method="manual",
-        scanned_at=now,
-        scanned_by=actor.id,
-    )
-    db.add(out_event)
+    # Lock the worker row (SELECT ... FOR UPDATE on users)
+    db.query(User.id).filter(User.id == flag.user_id).with_for_update().first()
 
-    # 4. Stamp flag as cleared
+    # 4. Check worker's latest check event to decide whether to insert manual 'out'
+    latest_event = (
+        db.query(CheckEvent)
+        .filter(CheckEvent.user_id == flag.user_id)
+        .order_by(CheckEvent.scanned_at.desc(), CheckEvent.id.desc())
+        .first()
+    )
+
+    is_on_later_shift = False
+    if latest_event and latest_event.direction == "in":
+        if latest_event.scanned_at >= asgn.ends_at:
+            is_on_later_shift = True
+        else:
+            later_shift = (
+                db.query(Assignment)
+                .filter(
+                    Assignment.user_id == flag.user_id,
+                    Assignment.starts_at > asgn.starts_at,
+                    Assignment.starts_at <= now,
+                )
+                .first()
+            )
+            if later_shift:
+                is_on_later_shift = True
+
+    if (
+        latest_event is not None
+        and latest_event.direction == "in"
+        and latest_event.tunnel_id == asgn.tunnel_id
+        and not is_on_later_shift
+    ):
+        out_event = CheckEvent(
+            user_id=flag.user_id,
+            tunnel_id=asgn.tunnel_id,
+            direction="out",
+            method="manual",
+            scanned_at=now,
+            scanned_by=actor.id,
+        )
+        db.add(out_event)
+
+    # 5. Stamp flag as cleared
     flag.cleared_at = now
     flag.cleared_by = actor.id
     flag.note = trimmed_note

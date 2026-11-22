@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.assignment import Assignment
 from app.models.user import User
+from app.services import clock
 
 
 def get_current_tunnel_id(
@@ -26,7 +27,7 @@ def get_current_tunnel_id(
     This implements the specification's 'own tunnel' scoping rule.
     """
     if now is None:
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = clock.utcnow()
     elif now.tzinfo is None:
         now = now.replace(tzinfo=datetime.timezone.utc)
 
