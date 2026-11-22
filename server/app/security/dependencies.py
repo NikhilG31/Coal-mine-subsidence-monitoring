@@ -127,10 +127,4 @@ def get_allowed_mine_ids(db: Session, user: User) -> List[int]:
     return [m[0] for m in assigned]
 
 
-def get_visible_tunnel_ids(db: Session, user: User) -> Optional[List[int]]:
-    """Returns accessible tunnel IDs within permitted mines.
-
-    TODO(step 5): The foreman/miner 'own tunnel' rule requires the assignments table
-    from Step 5. Until assignments exist, workers can see all tunnels in their permitted mines.
-    """
-    return None
+from app.services.tunnel_scope import get_visible_tunnel_ids

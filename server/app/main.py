@@ -28,6 +28,7 @@ if ALLOW_UNKEYED_INGEST:
 
 from app.routers import (
     alerts,
+    assignments,
     auth,
     demo,
     export,
@@ -35,11 +36,13 @@ from app.routers import (
     health,
     history,
     ingest,
+    me,
     mines,
     nodes,
     notifications,
     placements,
     users,
+    workers,
 )
 from app.security.dependencies import PasswordChangeRequiredException
 from app.watchdog_runner import runner as watchdog_runner
@@ -96,6 +99,9 @@ app.include_router(notifications.router)
 app.include_router(demo.router)
 app.include_router(auth.router)
 app.include_router(users.router)
+app.include_router(workers.router)
+app.include_router(assignments.router)
+app.include_router(me.router)
 
 
 @app.get("/")

@@ -6,6 +6,7 @@ Must NOT initiate database connections, perform I/O beyond .env loading, or impo
 import os
 from pathlib import Path
 from typing import List, Optional
+import zoneinfo
 from dotenv import load_dotenv
 
 # Search for .env at repo root, then server root
@@ -81,6 +82,22 @@ _cors_origins_raw = os.getenv("CORS_ORIGINS", "")
 CORS_ORIGINS: List[str] = [
     origin.strip() for origin in _cors_origins_raw.split(",") if origin.strip()
 ]
+
+
+# Step 5: Shift and Work Hours Configuration
+WEEKLY_HOURS_LIMIT: float = float(os.getenv("WEEKLY_HOURS_LIMIT", "48"))
+MAX_SHIFT_HOURS: float = float(os.getenv("MAX_SHIFT_HOURS", "16"))
+HOURS_TIMEZONE: str = os.getenv("HOURS_TIMEZONE", "Asia/Kolkata").strip()
+
+if WEEKLY_HOURS_LIMIT <= 0:
+    raise ValueError("WEEKLY_HOURS_LIMIT must be positive")
+if MAX_SHIFT_HOURS <= 0:
+    raise ValueError("MAX_SHIFT_HOURS must be positive")
+
+try:
+    zoneinfo.ZoneInfo(HOURS_TIMEZONE)
+except Exception as e:
+    raise ValueError(f"HOURS_TIMEZONE '{HOURS_TIMEZONE}' is not a valid IANA timezone: {e}")
 
 
 def validate_jwt_secret() -> None:

@@ -51,7 +51,8 @@ coal-mine-subsidence-monitoring/
     │       ├── c79d6f612a5e_create_step1_tables.py # Initial 8 core PostgreSQL tables
     │       ├── d84e2a87b91f_step1_hardening.py   # Server defaults, check constraint, index cleanup
     │       ├── e95f3b721a01_step3_placement_and_audit.py # Audit log, mine unique, gateway MAC regex, placement constraint
-    │       └── e252124b61df_step4_alerts_and_token_version.py # Alerts table, partial unique indexes, user token_version
+    │       ├── e252124b61df_step4_alerts_and_token_version.py # Alerts table, partial unique indexes, user token_version
+    │       └── c1506e641433_step5_workers_assignments_shifts.py # Worker profiles, assignments, and GIST exclusion constraint
     ├── app/                                      # Application package
     │   ├── __init__.py                           # App package root
     │   ├── config.py                             # Centralized environment variable loader (no defaults for DB)
@@ -66,6 +67,7 @@ coal-mine-subsidence-monitoring/
     │   ├── models/                               # SQLAlchemy ORM models (one file per table)
     │   │   ├── __init__.py                       # Package exports for all models
     │   │   ├── alert.py                          # Alert model with offline states and partial unique constraints
+    │   │   ├── assignment.py                     # Underground tunnel shift assignment with GIST exclusion constraint
     │   │   ├── audit_log.py                      # Immutable audit log model
     │   │   ├── company.py                        # Company table and normalized name helper
     │   │   ├── gateway.py                        # Hardware gateway table
@@ -73,9 +75,11 @@ coal-mine-subsidence-monitoring/
     │   │   ├── node.py                           # Sensor nodes table (1..255 range constraint)
     │   │   ├── reading.py                        # Telemetry readings table with partial unique index
     │   │   ├── tunnel.py                         # Underground mine tunnels table
-    │   │   └── user.py                           # Users and UserMine association tables
+    │   │   ├── user.py                           # Users and UserMine association tables
+    │   │   └── worker_profile.py                 # Worker profile and emergency contact table
     │   ├── routers/                              # FastAPI area routers (HTTP handling only)
     │   │   ├── alerts.py                         # GET /api/alerts, POST /api/alerts/{id}/ack
+    │   │   ├── assignments.py                    # POST/PATCH/DELETE /api/assignments, GET /api/assignments
     │   │   ├── auth.py                           # POST /api/auth/login, GET /api/auth/me, POST /api/auth/logout, POST /api/auth/change-password
     │   │   ├── demo.py                           # /api/demo/* simulation and testing routes
     │   │   ├── export.py                         # GET /api/export.xlsx workbook export
@@ -83,16 +87,19 @@ coal-mine-subsidence-monitoring/
     │   │   ├── health.py                         # GET /api/health monitoring endpoint
     │   │   ├── history.py                        # GET /api/history time-series queries (eager loaded)
     │   │   ├── ingest.py                         # POST /api/ingest 38-byte binary receiver
+    │   │   ├── me.py                             # GET /api/me/shifts, GET /api/me/profile
     │   │   ├── mines.py                          # GET/POST /api/mines, /api/mines/{id}/tunnels, /api/mines/{id}/gateways
     │   │   ├── nodes.py                          # GET /api/nodes telemetry list
     │   │   ├── notifications.py                  # GET / POST /api/notifications/config
     │   │   ├── placements.py                     # GET /api/placements, GET /api/unplaced, PATCH/DELETE /api/nodes/{id}/placement
-    │   │   └── users.py                          # GET/POST /api/users, PATCH/DELETE /api/users/{id}
+    │   │   ├── users.py                          # GET/POST /api/users, PATCH/DELETE /api/users/{id}
+    │   │   └── workers.py                        # GET /api/workers, GET /api/workers/{id}, PUT /api/workers/{id}/profile
     │   ├── schemas/                              # Pydantic serialization schemas and view models
     │   │   ├── __init__.py                       # Package exports
     │   │   ├── mines.py                          # Mine, tunnel, and gateway creation request schemas
     │   │   ├── nodes.py                          # WorkerNodeView (strict leakage prevention) & SuperiorNodeView
-    │   │   └── placements.py                     # PlacementsResponse, WorkerPlacementView, SuperiorPlacementView
+    │   │   ├── placements.py                     # PlacementsResponse, WorkerPlacementView, SuperiorPlacementView
+    │   │   └── workers.py                        # ProfileUpsertRequest, CreateAssignmentRequest, and worker shift schemas
     │   ├── security/                             # Authentication, RBAC, and cryptographic primitives
     │   │   ├── __init__.py                       # Security package exports
     │   │   ├── dependencies.py                   # FastAPI dependencies (auth, role checks, mine scoping)
@@ -111,7 +118,10 @@ coal-mine-subsidence-monitoring/
     │   │   ├── node_placement.py                 # Node placement completeness helpers and expressions
     │   │   ├── node_serializer.py                # Telemetry dictionary serializer (superior & worker views)
     │   │   ├── packet_codec.py                   # 38-byte struct parse and pack definition
-    │   │   └── watchdog_service.py               # Watchdog offline timeout evaluation and alert auto-resolution
+    │   │   ├── shift_service.py                  # Shift creation, duration checks, overlap detection, weekly hours arithmetic
+    │   │   ├── tunnel_scope.py                   # Worker current tunnel resolution and miner visible tunnel scoping
+    │   │   ├── watchdog_service.py               # Watchdog offline timeout evaluation and alert auto-resolution
+    │   │   └── worker_queries.py                 # Scoped worker roster queries and worker shift detail history
     │   └── static/                               # Web dashboard client files
     │       ├── app.js                            # Leaflet and dashboard client logic
     │       ├── index.html                        # Dashboard HTML layout
@@ -124,7 +134,8 @@ coal-mine-subsidence-monitoring/
         ├── test_ingest.py                        # Packet length, gateway check, dedup, and classification tests
         ├── test_seed.py                          # seed_manager idempotency and password reset tests
         ├── test_step3_phase_b.py                 # Step 3 gateway keys, placement, audit, and manager journey tests
-        └── test_step4_watchdog.py                # Step 4 watchdog, connectivity boundary, and scoping tests
+        ├── test_step4_watchdog.py                # Step 4 watchdog, connectivity boundary, and scoping tests
+        └── test_step5_shifts.py                  # Step 5 shifts, overlap rejection, exclusion constraint, scoping tests
 ```
 
 ---
@@ -173,6 +184,9 @@ Configuration is loaded from `.env` in the repository root using `python-dotenv`
 | `CORS_ORIGINS` | No | Comma-separated list of allowed CORS origins | `""` (same-origin only) |
 | `ALLOW_UNKEYED_INGEST` | No | Development-only compatibility flag. When `true`, allows active gateways to ingest without `X-Gateway-Key`. Logs startup and rate-limited warnings. | `false` |
 | `DEMO_GATEWAY_KEY` | Dev/Tests | Shared 256-bit API key for simulator and demo seeding (min 32 chars, no `CHANGE_ME`, min 12 distinct chars) | (User secret) |
+| `WEEKLY_HOURS_LIMIT` | No | Maximum recommended shift hours per worker per week before non-blocking warning | `48.0` |
+| `MAX_SHIFT_HOURS` | No | Maximum allowed duration in hours for a single continuous shift assignment | `16.0` |
+| `HOURS_TIMEZONE` | No | Valid IANA timezone for weekly shift hour boundary splitting (Monday 00:00 to Monday 00:00) | `Asia/Kolkata` |
 
 ---
 
@@ -237,7 +251,7 @@ python -m pytest -v
 
 ## 6. Data Model
 
-The schema is managed strictly via Alembic migrations. The database contains these 10 core tables:
+The schema is managed strictly via Alembic migrations. The database contains these 12 core tables:
 
 ### 1. `companies`
 - `id` (`Integer`, PK, autoincrement)
@@ -364,6 +378,39 @@ The schema is managed strictly via Alembic migrations. The database contains the
 > **Why Partial Unique Indexes on alerts?**  
 > Partial unique indexes on PostgreSQL enforce that at most **one** open alert (`resolved_at IS NULL`) can exist concurrently for any given hardware entity (node or gateway). Even under extreme database concurrency across multiple worker threads or cluster instances, the DB engine rejects duplicate opens via `IntegrityError`, which the watchdog service catches and treats as already open. When a device recovers, `resolved_at` is stamped; if the device goes offline again later, a clean new alert row is created without overwriting historical incident records.
 
+### 11. `worker_profiles`
+- `user_id` (`Integer`, PK, FK -> `users.id` ON DELETE CASCADE)
+- `company_id` (`Integer`, FK -> `companies.id` ON DELETE CASCADE, nullable=False, index)
+- `employee_no` (`String(64)`, nullable=False)
+- `phone` (`String(32)`, nullable=True)
+- `emergency_contact_name` (`String(255)`, nullable=True)
+- `emergency_contact_phone` (`String(32)`, nullable=True)
+- `joined_on` (`Date`, nullable=True)
+- **Constraint**: `UNIQUE (company_id, employee_no)` named `uq_worker_profiles_company_employee_no`
+
+### 12. `assignments`
+- `id` (`BigInteger`, PK, autoincrement)
+- `user_id` (`Integer`, FK -> `users.id` ON DELETE CASCADE, nullable=False, index)
+- `tunnel_id` (`Integer`, FK -> `tunnels.id` ON DELETE RESTRICT, nullable=False, index)
+- `starts_at` (`TIMESTAMPTZ`, nullable=False)
+- `ends_at` (`TIMESTAMPTZ`, nullable=False)
+- `created_by` (`Integer`, FK -> `users.id` ON DELETE SET NULL, nullable=True)
+- `created_at` (`TIMESTAMPTZ`, nullable=False, server_default=`now()`)
+- **Constraints**:
+  - `ck_assignments_range`: `CHECK (ends_at > starts_at)`
+  - `ex_assignments_user_no_overlap`: `EXCLUDE USING gist (user_id WITH =, tstzrange(starts_at, ends_at, '[)') WITH &&)`
+- **Indexes**:
+  - `ix_assignments_user_id_starts_at`: `(user_id, starts_at DESC)`
+  - `ix_assignments_tunnel_id_starts_at`: `(tunnel_id, starts_at)`
+
+> **Worker "Current Tunnel" and Visible Tunnels Rule (Single Source of Truth - `services/tunnel_scope.py`)**:  
+> A worker's current tunnel is determined chronologically:
+> 1. The tunnel of the assignment that is active **now** (`starts_at <= now < ends_at`).
+> 2. Otherwise, the next **upcoming** one (smallest `starts_at > now`).
+> 3. Otherwise, the most recent **past** one (largest `ends_at <= now`).
+> 4. Otherwise, `None`.  
+> This implements our reading of the specification's "own tunnel" scoping rule. Miners receive `[current_tunnel]` (or `[]` if unassigned), restricting `/api/nodes`, `/api/placements`, and `/api/mines/{id}/tunnels` strictly to their assigned tunnel. Foremen and superiors receive `None` (unrestricted visibility across permitted mines).
+
 ### 6.1. Connectivity Rules and Watchdog Architecture
 
 - **Single Source of Truth (`services/connectivity.py`)**:
@@ -479,12 +526,20 @@ Radio command sent by gateway over ESP-NOW:
 | `POST` | `/api/demo/toggle-live`| Manager Only | JSON (optional): `{"enable": bool}`. Returns 404 when `ENABLE_DEMO_ROUTES=false`. | `{"running": bool}` | `200`, `401`, `403`, `404` |
 | `GET` | `/api/demo/status` | Manager Only | Returns 404 when `ENABLE_DEMO_ROUTES=false`. | `{"running": bool}` | `200`, `401`, `403`, `404` |
 | `POST` | `/api/demo/trigger-hazard` | Manager Only | JSON: `{"gateway_mac_address", "node_id", "level"}`. 404 when demo disabled. | `{"message": "..."}` | `200`, `401`, `403`, `404` |
+| `GET` | `/api/workers` | Superiors Only | Query: `mine_id`, `tunnel_id`, `q`. Scoped to permitted mines. | `{"workers": [{"id", "username", "full_name", "role", "active", "employee_no", "current_tunnel"}]}` | `200`, `401`, `403`, `404` |
+| `GET` | `/api/workers/{id}` | Superiors Only | Path param. Permitted mines only. | Full worker details, phone, emergency contact, `upcoming_shifts`, `past_shifts` | `200`, `401`, `403`, `404` |
+| `PUT` | `/api/workers/{id}/profile` | Manager Only | JSON: `employee_no`, `phone`, `emergency_contact_name`, `emergency_contact_phone`, `joined_on`. Records audit (`worker.profile_update`) with changed fields only. | Updated profile object | `200`, `400`, `401`, `403`, `404` |
+| `POST` | `/api/assignments` | Manager or Safety Officer | JSON: `user_id`, `tunnel_id`, `starts_at`, `ends_at` (ISO with offset). Validates duration <= 16h, mine assignment, active status, overlap. Records audit (`assignment.create`). | `{"assignment": {...}, "warnings": [...]}` | `201`, `400`, `401`, `403`, `404`, `409`, `422` |
+| `PATCH` | `/api/assignments/{id}` | Manager or Safety Officer | JSON: `ends_at` (ISO with offset). Shortens shift only (`starts_at < ends_at <= current_ends_at`). Records audit (`assignment.update`). | `{"assignment": {...}}` | `200`, `400`, `401`, `403`, `404`, `422` |
+| `DELETE` | `/api/assignments/{id}` | Manager or Safety Officer | Path param. Future shifts only (started shifts rejected with 409). Records audit (`assignment.delete`). | `{"message": "Assignment deleted successfully"}` | `200`, `401`, `403`, `404`, `409` |
+| `GET` | `/api/assignments` | Superiors Only | Query: `user_id`, `mine_id`, `tunnel_id`, `from`, `to`. Scoped to permitted mines. | `{"assignments": [...]}` | `200`, `401`, `403`, `404`, `422` |
+| `GET` | `/api/me/shifts` | Any Authenticated User | Query: `from`, `to` (optional). Worker-safe view (omits `created_by`). | `{"shifts": [...]}` | `200`, `401`, `422` |
+| `GET` | `/api/me/profile` | Any Authenticated User | None. Returns own worker profile with current tunnel, or empty object for non-workers. | Worker profile object or `{}` | `200`, `401` |
 | `GET` | `/` | Browser | None | HTML dashboard (`index.html`) | `200` |
 
 ### Planned Routes (Future Steps)
 - `GET /api/mines/{id}/profile` (*Planned - Step 9*)
 - `POST /api/nodes/{id}/commands` (*Planned - Step 7*)
-- `POST /api/assignments` (*Planned - Step 5*)
 - `POST /api/checkins` (*Planned - Step 6*)
 - `POST /api/incidents` (*Planned - Step 7*)
 - `POST /api/worker-reports` (*Planned - Step 8*)
@@ -569,7 +624,7 @@ Radio command sent by gateway over ESP-NOW:
 | **Step 2.5** | Hardening and Secret Policies | **Done** | Fail-fast secret validation at startup, centralized password policy, non-blocking handlers, data-driven route policy matrix, worker placement segregation, distinct_on query extraction. | 2026-11-22 |
 | **Step 3** | Mines, tunnels, gateways and node placement | **Done** | A brand-new Manager can go from an empty account to a placed node carrying a tunnel, entirely through the app: log in, change password, create a mine, add a tunnel, register a gateway (key shown once), see the device appear in the Unplaced queue after it posts with that key, and place it on the map with a tunnel. | 2026-11-22 |
 | **Step 4** | Watchdog and offline detection | **Done** | Pure watchdog cycle and background runner with Postgres advisory lock, alerts table with partial unique open-alert guarantees, offline threshold evaluations, gateway failure suppression, alert ack lifecycle with audit logging, and token_version session invalidation. | 2026-11-22 |
-| **Step 5** | Workers and shifts | *Not started* | Worker pages, assignments, overlap check, My hours. Double-booking is rejected. | — |
+| **Step 5** | Workers and shifts | **Done** | Manager or Safety Officer assigns worker to a tunnel for a shift; second overlapping shift for the same worker is rejected with 409 naming the clashing shift; the worker sees both upcoming and past shifts under "My hours"; a miner sees only the nodes of their own tunnel (a foreman keeps mine-level view); and the weekly-hours warning appears when the limit is exceeded. | 2026-11-22 |
 | **Step 6** | QR check-in and headcount | *Not started* | Badges, scanner page, check events, check flags, headcount panel. Scanning in and out changes headcount; missed check-out raises flag. | — |
 | **Step 7** | Incidents and roll call | *Not started* | Manual broadcast, roster snapshot, accounted-for marking, buzzer commands to nodes. Incident lists who is unaccounted for. | — |
 | **Step 8** | Worker reports and SOS | *Not started* | Report form, inbox, status flow, node SOS button and SOS packet. Report moves through workflow; button press shows as SOS report within seconds. | — |
@@ -582,8 +637,8 @@ Radio command sent by gateway over ESP-NOW:
 
 1. **Pre-Step-3 Dev Gateways Key Invalidation**:
    Gateways seeded in earlier steps with `placeholder_dev_api_key_hash` cannot ingest telemetry until their API key is rotated via `POST /api/gateways/{id}/rotate-key` or re-seeded with `DEMO_GATEWAY_KEY`.
-2. **Tunnel Scoping in Step 2/3**:
-   In Step 3, miners and foremen see nodes across all mines assigned to them in `user_mines`. Tunnel-level assignment filtering (`assignments` table and active shift checks) belongs to Step 5.
+2. **Tunnel Scoping (Resolved in Step 5)**:
+   Miner visibility is now strictly tunnel-scoped via the `assignments` table, active shift evaluation, and GIST exclusion constraint (`services/tunnel_scope.py`). Foremen retain mine-level visibility.
 3. **In-Memory Rate Limiting**:
    Failed login attempts are rate limited in-memory (5 failures per username + IP sliding window over 15 minutes returning HTTP 429 with `Retry-After`). In a multi-worker production deployment, this will be backed by Redis.
 4. **Commands and SOS Alerting**:
@@ -603,6 +658,38 @@ The following firmware features from Step 4 require modifying packet types or fi
 ---
 
 ## 12. Changelog
+
+### 2026-11-22 - Step 5: Workers, Assignments, and Shifts
+- **Database Migration (`c1506e641433`)**:
+  - Created `worker_profiles` table with `user_id` (PK, FK users CASCADE), `company_id` (FK companies CASCADE), `employee_no`, `phone`, `emergency_contact_name`, `emergency_contact_phone`, `joined_on`, and unique constraint `uq_worker_profiles_company_employee_no` on `(company_id, employee_no)`.
+  - Created `assignments` table with `id` (bigserial PK), `user_id` (FK users CASCADE), `tunnel_id` (FK tunnels RESTRICT), `starts_at` (timestamptz), `ends_at` (timestamptz), `created_by` (FK users SET NULL), `created_at` (timestamptz).
+  - Added range constraint `ck_assignments_range` (`ends_at > starts_at`).
+  - Added PostgreSQL GIST exclusion constraint `ex_assignments_user_no_overlap` on `(user_id WITH =, tstzrange(starts_at, ends_at, '[)') WITH &&)`.
+  - Added indexes `ix_assignments_user_id_starts_at` on `(user_id, starts_at DESC)` and `ix_assignments_tunnel_id_starts_at` on `(tunnel_id, starts_at)`.
+  - Verified bidirectional migration integrity with `alembic downgrade -1` and `alembic upgrade head`, and confirmed zero schema drift with `alembic check`.
+- **Shift Domain Service (`services/shift_service.py`)**:
+  - Built `create_shift` with validations: worker existence, company match, active foreman/miner role, worker assigned to tunnel's mine via `user_mines`, tunnel permitted to actor, non-closed tunnel, `ends_at > starts_at`, and duration <= `MAX_SHIFT_HOURS`.
+  - Pre-check query + PostgreSQL GIST exclusion constraint catch raising `ShiftOverlapError` carrying clashing shift details (`id`, `tunnel_name`, `starts_at`, `ends_at`).
+  - Built `update_end` allowing shift shortening only (`starts_at < new_end <= current_end`).
+  - Built `delete_shift` allowing deletion of unstarted future shifts only (`starts_at > now`), rejecting started shifts with HTTP 409 `{"code": "shift_started"}`.
+  - Built `weekly_hours_warnings`: splits shifts across Monday 00:00 boundary in `HOURS_TIMEZONE`, sums total weekly hours, and emits non-blocking warning when exceeding `WEEKLY_HOURS_LIMIT`.
+- **Worker Scoping & Profile Services**:
+  - Implemented `services/tunnel_scope.py` single source of truth for worker "current tunnel" (active assignment now -> next upcoming -> most recent past -> None).
+  - Miner sees only nodes, placements, and tunnels of their current tunnel; unassigned miner receives empty lists; foremen and superiors retain permitted mine visibility.
+  - Implemented `services/worker_queries.py`: role-scoped listing of workers with search filter `q` (name, username, employee_no) and mine/tunnel filters.
+- **REST Endpoints & Audit Logging**:
+  - Added superior routes: `GET /api/workers`, `GET /api/workers/{id}`, `PUT /api/workers/{id}/profile` (Manager only; audited with `changed_fields` only, never phone numbers or contact names).
+  - Added scheduler routes: `POST /api/assignments`, `PATCH /api/assignments/{id}`, `DELETE /api/assignments/{id}`.
+  - Added range query route: `GET /api/assignments`.
+  - Added worker self-service routes: `GET /api/me/shifts` (worker-safe view omitting `created_by`), `GET /api/me/profile`.
+- **Frontend Dashboard Updates (`index.html`, `app.js`)**:
+  - Superior console: Added Workers panel modal with worker search, mine/tunnel filters, worker profile inspection, manager profile editing, shift assignment form with clash warning and yellow weekly hours warning.
+  - Worker console: Added "My hours" panel modal displaying worker profile, weekly hours monitor with progress bar vs limit, active shift indicator, upcoming shifts, and past shifts.
+  - Enforced strict DOM escaping on all user-controlled text via `escapeHtml`.
+- **Automated Verification**:
+  - Added `tests/test_step5_shifts.py` with 7 comprehensive tests covering overlap rejection, concurrent GIST constraint violations, validation matrix, night shift boundary splitting, miner vs foreman vs superior scoping, privacy/security leakage prevention, and the complete Done-When end-to-end journey.
+  - Updated `POLICY_TABLE` and data-driven matrix tests in `tests/test_auth_and_roles.py`.
+  - Full test suite: 73 passed in pytest.
 
 ### 2026-11-22 - Step 4.5: Hardening
 - **Stale Alert Resolution (A1)**: Watchdog cycle automatically resolves open alerts whose subject is no longer eligible: inactive gateways (`active=False`) and unplaced nodes (`is_placed=False`) in a single pass per cycle.

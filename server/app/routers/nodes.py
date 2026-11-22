@@ -17,6 +17,7 @@ from app.schemas.nodes import NodesResponse, SuperiorNodeView, WorkerNodeView
 from app.security.dependencies import (
     get_allowed_mine_ids,
     get_current_user,
+    get_visible_tunnel_ids,
 )
 from app.security.roles import WORKER_ROLES
 from app.services.latest_readings import get_latest_readings
@@ -57,6 +58,13 @@ def api_nodes(
         .join(Gateway, Gateway.id == Node.gateway_id)
         .filter(Gateway.mine_id.in_(scoped_mines))
     )
+
+    # Step 5: Miner sees ONLY nodes placed in their visible tunnels (none -> empty list)
+    visible_tunnels = get_visible_tunnel_ids(db, user)
+    if visible_tunnels is not None:
+        if not visible_tunnels:
+            return {"now": now_ts, "nodes": []}
+        query = query.filter(Node.tunnel_id.in_(visible_tunnels))
 
     if gateway:
         clean_mac = norm_mac(gateway)

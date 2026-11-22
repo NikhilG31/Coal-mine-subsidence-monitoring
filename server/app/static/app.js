@@ -882,6 +882,12 @@ function updateUserBadge(user) {
   const isSuperior = ["manager", "safety_officer", "engineer"].includes(user.role);
   const isWorker = ["foreman", "miner"].includes(user.role);
 
+  const btnWorkers = document.getElementById("btnWorkers");
+  if (btnWorkers) btnWorkers.style.display = isSuperior ? "inline-flex" : "none";
+
+  const btnMyHours = document.getElementById("btnMyHours");
+  if (btnMyHours) btnMyHours.style.display = isWorker ? "inline-flex" : "none";
+
   const btnAddUser = document.getElementById("btnAddUser");
   if (btnAddUser) btnAddUser.style.display = isManager ? "inline-flex" : "none";
 
@@ -1503,3 +1509,537 @@ async function deleteGateway(gwId) {
     alert("Disable gateway failed: " + err.message);
   }
 }
+
+// =============================================================================
+// STEP 5: WORKERS, SHIFTS & ASSIGNMENTS FRONTEND CONSOLE
+// =============================================================================
+
+function escapeHtml(str) {
+  if (str === null || str === undefined) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+let allAvailableTunnels = [];
+
+async function openWorkersModal() {
+  const modal = document.getElementById("workersModal");
+  if (modal) modal.classList.add("open");
+
+  // Load mines and tunnels for filters
+  try {
+    const mRes = await apiFetch("/api/mines");
+    const mineSelect = document.getElementById("workerMineFilter");
+    if (mineSelect && mRes.mines) {
+      mineSelect.innerHTML = `<option value="">All Permitted Mines</option>` +
+        mRes.mines.map(m => `<option value="${m.id}">${escapeHtml(m.name)}</option>`).join("");
+    }
+
+    // Pre-cache all tunnels for assignment
+    allAvailableTunnels = [];
+    if (mRes.mines) {
+      for (const m of mRes.mines) {
+        try {
+          const tRes = await apiFetch(`/api/mines/${m.id}/tunnels`);
+          if (tRes.tunnels) {
+            tRes.tunnels.forEach(t => allAvailableTunnels.push({ ...t, mine_name: m.name }));
+          }
+        } catch (_) {}
+      }
+    }
+  } catch (err) {
+    console.error("Failed to load mines for worker filter:", err);
+  }
+
+  await searchWorkers();
+}
+
+function closeWorkersModal() {
+  const modal = document.getElementById("workersModal");
+  if (modal) modal.classList.remove("open");
+}
+
+async function onWorkerMineFilterChange() {
+  const mineId = document.getElementById("workerMineFilter").value;
+  const tunnelSelect = document.getElementById("workerTunnelFilter");
+  if (!tunnelSelect) return;
+
+  tunnelSelect.innerHTML = `<option value="">All Tunnels</option>`;
+  if (mineId) {
+    try {
+      const res = await apiFetch(`/api/mines/${mineId}/tunnels`);
+      if (res.tunnels) {
+        tunnelSelect.innerHTML += res.tunnels.map(t =>
+          `<option value="${t.id}">${escapeHtml(t.name)} (${escapeHtml(t.code)})</option>`
+        ).join("");
+      }
+    } catch (err) {
+      console.error("Failed to load tunnels:", err);
+    }
+  }
+}
+
+function resetWorkerFilters() {
+  document.getElementById("workerSearchInput").value = "";
+  document.getElementById("workerMineFilter").value = "";
+  const tunnelSelect = document.getElementById("workerTunnelFilter");
+  if (tunnelSelect) tunnelSelect.innerHTML = `<option value="">All Tunnels</option>`;
+  searchWorkers();
+}
+
+async function searchWorkers() {
+  const container = document.getElementById("workersListContainer");
+  if (!container) return;
+  container.innerHTML = `<div style="font-size:12px; color:var(--ink-3);">Searching workers...</div>`;
+
+  const q = document.getElementById("workerSearchInput")?.value.trim() || "";
+  const mineId = document.getElementById("workerMineFilter")?.value || "";
+  const tunnelId = document.getElementById("workerTunnelFilter")?.value || "";
+
+  let url = `/api/workers?`;
+  const params = [];
+  if (q) params.push(`q=${encodeURIComponent(q)}`);
+  if (mineId) params.push(`mine_id=${encodeURIComponent(mineId)}`);
+  if (tunnelId) params.push(`tunnel_id=${encodeURIComponent(tunnelId)}`);
+  url += params.join("&");
+
+  try {
+    const res = await apiFetch(url);
+    const workers = res.workers || [];
+    if (workers.length === 0) {
+      container.innerHTML = `<div style="font-size:12px; color:var(--ink-3); padding:10px;">No workers found.</div>`;
+      return;
+    }
+
+    container.innerHTML = workers.map(w => {
+      const currentTunnelText = w.current_tunnel
+        ? `📍 Tunnel: <strong>${escapeHtml(w.current_tunnel.name)}</strong>`
+        : `<span style="color:var(--ink-3);">📍 No active shift</span>`;
+      const empNoText = w.employee_no ? escapeHtml(w.employee_no) : "ID pending";
+
+      return `
+        <div class="zine-box" style="padding:8px; display:flex; justify-content:space-between; align-items:center; background:#fff;">
+          <div>
+            <div style="font-weight:700; font-size:13px;">${escapeHtml(w.full_name)} <span class="role-tag">${escapeHtml(w.role.toUpperCase())}</span></div>
+            <div style="font-size:11px; color:var(--ink-2); margin-top:2px;">Employee: <code>${empNoText}</code> | User: <em>@${escapeHtml(w.username)}</em></div>
+            <div style="font-size:11px; margin-top:3px;">${currentTunnelText}</div>
+          </div>
+          <button class="neo-btn btn-small btn-primary" onclick="selectWorker(${w.id})">Inspect</button>
+        </div>
+      `;
+    }).join("");
+  } catch (err) {
+    container.innerHTML = `<div style="font-size:12px; color:var(--red-1);">Failed to load workers: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function selectWorker(workerId) {
+  const pane = document.getElementById("workerDetailPane");
+  if (!pane) return;
+  pane.innerHTML = `<div style="font-size:12px; color:var(--ink-3);">Loading worker profile and history...</div>`;
+
+  try {
+    const worker = await apiFetch(`/api/workers/${workerId}`);
+    const isManager = currentUser && currentUser.role === "manager";
+    const canSchedule = currentUser && ["manager", "safety_officer"].includes(currentUser.role);
+
+    const empNo = escapeHtml(worker.employee_no || "");
+    const phone = escapeHtml(worker.phone || "");
+    const emName = escapeHtml(worker.emergency_contact_name || "");
+    const emPhone = escapeHtml(worker.emergency_contact_phone || "");
+    const joinedOn = escapeHtml(worker.joined_on || "");
+    const tunnelName = worker.current_tunnel ? escapeHtml(worker.current_tunnel.name) : "None (Unassigned)";
+
+    // Default datetimes for assignment form (next hour to +8 hours)
+    const now = new Date();
+    now.setMinutes(0, 0, 0);
+    now.setHours(now.getHours() + 1);
+    const defaultStart = now.toISOString().slice(0, 16);
+    const end = new Date(now.getTime() + 8 * 3600 * 1000);
+    const defaultEnd = end.toISOString().slice(0, 16);
+
+    const tunnelOptions = allAvailableTunnels.map(t =>
+      `<option value="${t.id}">${escapeHtml(t.mine_name)} ➔ ${escapeHtml(t.name)} (${escapeHtml(t.code)})</option>`
+    ).join("");
+
+    pane.innerHTML = `
+      <!-- Header -->
+      <div style="border-bottom:2px solid var(--ink); padding-bottom:8px; margin-bottom:10px;">
+        <h4 style="font-family:var(--condensed); font-size:16px; margin:0;">
+          ${escapeHtml(worker.full_name)} <span class="role-tag">${escapeHtml(worker.role.toUpperCase())}</span>
+        </h4>
+        <div style="font-size:11px; color:var(--ink-3); margin-top:3px;">
+          Username: <strong>@${escapeHtml(worker.username)}</strong> | Status: ${worker.active ? "🟢 Active" : "🔴 Inactive"}
+        </div>
+      </div>
+
+      <!-- Current Tunnel Badge -->
+      <div style="background:var(--paper); border:1px solid var(--ink); padding:6px 10px; margin-bottom:10px; font-size:12px;">
+        CURRENT TUNNEL: <strong>${tunnelName}</strong>
+      </div>
+
+      <!-- Profile Edit Form (Manager) or Readonly Cards (Other Superiors) -->
+      ${isManager ? `
+        <details style="margin-bottom:12px;">
+          <summary style="font-size:12px; font-weight:700; cursor:pointer; color:var(--saffron);">✏️ EDIT WORKER PROFILE &amp; CONTACTS</summary>
+          <form onsubmit="handleSaveWorkerProfile(event, ${worker.id})" style="margin-top:8px; padding:10px; background:#fff; border:1px solid var(--ink);">
+            <div class="form-group" style="margin-bottom:6px;">
+              <label style="font-size:11px;">Employee ID (Required 1-64 chars)</label>
+              <input type="text" id="profEmpNo" class="form-input" required value="${empNo}" placeholder="e.g. EMP-1044">
+            </div>
+            <div class="form-group" style="margin-bottom:6px;">
+              <label style="font-size:11px;">Phone (5-32 digits)</label>
+              <input type="text" id="profPhone" class="form-input" value="${phone}" placeholder="+91 9876543210">
+            </div>
+            <div class="form-group" style="margin-bottom:6px;">
+              <label style="font-size:11px;">Emergency Contact Name</label>
+              <input type="text" id="profEmName" class="form-input" value="${emName}" placeholder="Emergency Contact Name">
+            </div>
+            <div class="form-group" style="margin-bottom:6px;">
+              <label style="font-size:11px;">Emergency Contact Phone</label>
+              <input type="text" id="profEmPhone" class="form-input" value="${emPhone}" placeholder="+91 9123456789">
+            </div>
+            <div class="form-group" style="margin-bottom:8px;">
+              <label style="font-size:11px;">Joined On (Date)</label>
+              <input type="date" id="profJoinedOn" class="form-input" value="${joinedOn}">
+            </div>
+            <button type="submit" class="neo-btn btn-small btn-primary" style="width:100%;">Save Profile Changes</button>
+          </form>
+        </details>
+      ` : `
+        <div style="font-size:11px; margin-bottom:10px; background:#fff; padding:6px; border:1px solid #ddd;">
+          <div>Employee ID: <strong>${empNo || "None"}</strong> | Joined: <strong>${joinedOn || "None"}</strong></div>
+          <div>Phone: <strong>${phone || "None"}</strong> | Emergency: <strong>${emName || "None"} (${emPhone || "None"})</strong></div>
+        </div>
+      `}
+
+      <!-- Shift Assignment Form (Manager & Safety Officer) -->
+      ${canSchedule ? `
+        <div style="background:#fff; border:2px solid var(--ink); padding:10px; margin-bottom:12px;">
+          <h5 style="font-family:var(--condensed); margin:0 0 8px 0;">⚡ ASSIGN TO UNDERGROUND TUNNEL</h5>
+          
+          <div id="assignWeeklyWarning" class="zine-box" style="display:none; background:#fff3cd; color:#856404; font-weight:700; border:2px solid #ffeeba; margin-bottom:8px; padding:6px 10px; font-size:11px;"></div>
+          <div id="assignClashError" class="zine-box" style="display:none; background:#f8d7da; color:#721c24; font-weight:700; border:2px solid #f5c6cb; margin-bottom:8px; padding:6px 10px; font-size:11px;"></div>
+
+          <form onsubmit="handleCreateAssignmentSubmit(event, ${worker.id})">
+            <div class="form-group" style="margin-bottom:6px;">
+              <label style="font-size:11px;">Target Tunnel</label>
+              <select id="assignTunnelId" class="form-select" required>
+                ${tunnelOptions}
+              </select>
+            </div>
+            <div style="display:flex; gap:8px; margin-bottom:8px;">
+              <div class="form-group" style="flex:1;">
+                <label style="font-size:11px;">Shift Start</label>
+                <input type="datetime-local" id="assignStartsAt" class="form-input" required value="${defaultStart}">
+              </div>
+              <div class="form-group" style="flex:1;">
+                <label style="font-size:11px;">Shift End</label>
+                <input type="datetime-local" id="assignEndsAt" class="form-input" required value="${defaultEnd}">
+              </div>
+            </div>
+            <button type="submit" class="neo-btn btn-small btn-primary" style="width:100%;">Create Shift Assignment</button>
+          </form>
+        </div>
+      ` : ""}
+
+      <!-- Upcoming Shifts -->
+      <h5 style="font-family:var(--condensed); margin:10px 0 4px 0;">UPCOMING SHIFTS</h5>
+      <div style="display:flex; flex-direction:column; gap:6px; max-height:140px; overflow-y:auto; margin-bottom:10px;">
+        ${worker.upcoming_shifts && worker.upcoming_shifts.length > 0 ? worker.upcoming_shifts.map(s => `
+          <div style="font-size:11px; padding:6px; background:#fff; border:1px solid #ddd; display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <strong>${escapeHtml(s.tunnel_name)}</strong> (${escapeHtml(s.mine_name)})<br>
+              <span style="color:var(--ink-2);">${new Date(s.starts_at).toLocaleString()} ➔ ${new Date(s.ends_at).toLocaleString()}</span>
+            </div>
+            ${canSchedule ? `
+              <div style="display:flex; gap:4px;">
+                <button type="button" class="neo-btn btn-small" onclick="handleShortenShift(${s.id}, '${s.starts_at}', '${s.ends_at}', ${worker.id})">Shorten</button>
+                <button type="button" class="neo-btn btn-small btn-danger" onclick="handleDeleteShift(${s.id}, ${worker.id})">✖</button>
+              </div>
+            ` : ""}
+          </div>
+        `).join("") : `<div style="font-size:11px; color:var(--ink-3);">No upcoming shifts.</div>`}
+      </div>
+
+      <!-- Past Shifts (Last 30 Days) -->
+      <h5 style="font-family:var(--condensed); margin:10px 0 4px 0;">PAST SHIFTS (LAST 30 DAYS)</h5>
+      <div style="display:flex; flex-direction:column; gap:6px; max-height:120px; overflow-y:auto;">
+        ${worker.past_shifts && worker.past_shifts.length > 0 ? worker.past_shifts.map(s => `
+          <div style="font-size:11px; padding:6px; background:#f9f9f9; border:1px solid #ddd;">
+            <strong>${escapeHtml(s.tunnel_name)}</strong> (${escapeHtml(s.mine_name)})<br>
+            <span style="color:var(--ink-3);">${new Date(s.starts_at).toLocaleString()} ➔ ${new Date(s.ends_at).toLocaleString()}</span>
+          </div>
+        `).join("") : `<div style="font-size:11px; color:var(--ink-3);">No past shifts in the last 30 days.</div>`}
+      </div>
+    `;
+  } catch (err) {
+    pane.innerHTML = `<div style="font-size:12px; color:var(--red-1);">Failed to load worker details: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function handleSaveWorkerProfile(event, workerId) {
+  event.preventDefault();
+  const empNo = document.getElementById("profEmpNo").value.trim();
+  const phone = document.getElementById("profPhone").value.trim() || null;
+  const emName = document.getElementById("profEmName").value.trim() || null;
+  const emPhone = document.getElementById("profEmPhone").value.trim() || null;
+  const joinedOn = document.getElementById("profJoinedOn").value || null;
+
+  try {
+    await apiFetch(`/api/workers/${workerId}/profile`, {
+      method: "PUT",
+      body: JSON.stringify({
+        employee_no: empNo,
+        phone: phone,
+        emergency_contact_name: emName,
+        emergency_contact_phone: emPhone,
+        joined_on: joinedOn,
+      }),
+    });
+    alert("Worker profile updated successfully!");
+    await selectWorker(workerId);
+    await searchWorkers();
+  } catch (err) {
+    alert("Profile update failed: " + err.message);
+  }
+}
+
+async function handleCreateAssignmentSubmit(event, workerId) {
+  event.preventDefault();
+  const tunnelId = parseInt(document.getElementById("assignTunnelId").value, 10);
+  const startLocal = document.getElementById("assignStartsAt").value;
+  const endLocal = document.getElementById("assignEndsAt").value;
+
+  const warnEl = document.getElementById("assignWeeklyWarning");
+  const errEl = document.getElementById("assignClashError");
+  if (warnEl) warnEl.style.display = "none";
+  if (errEl) errEl.style.display = "none";
+
+  // Require timezone offset by converting local dates to ISO-8601 UTC string
+  const startsAtIso = new Date(startLocal).toISOString();
+  const endsAtIso = new Date(endLocal).toISOString();
+
+  try {
+    const res = await fetch("/api/assignments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: workerId,
+        tunnel_id: tunnelId,
+        starts_at: startsAtIso,
+        ends_at: endsAtIso,
+      }),
+    });
+
+    const data = await res.json();
+
+    if (res.status === 201) {
+      if (data.warnings && data.warnings.length > 0) {
+        const w = data.warnings[0];
+        if (warnEl) {
+          warnEl.innerHTML = `⚠️ WEEKLY HOURS WARNING: Shift scheduled, but total weekly hours (${w.total_hours}h) exceeds limit (${w.limit_hours}h)!`;
+          warnEl.style.display = "block";
+        }
+      } else {
+        alert("Shift assigned successfully!");
+      }
+      await selectWorker(workerId);
+      await searchWorkers();
+    } else if (res.status === 409) {
+      if (errEl) {
+        const clash = data.clashing_shift;
+        const clashText = clash
+          ? `Overlaps with Shift #${clash.id} in ${escapeHtml(clash.tunnel_name)} (${new Date(clash.starts_at).toLocaleTimeString()} to ${new Date(clash.ends_at).toLocaleTimeString()})`
+          : data.detail || "Shift overlap detected";
+        errEl.innerHTML = `⚠️ CLASHING SHIFT REJECTED: ${clashText}`;
+        errEl.style.display = "block";
+      } else {
+        alert("Shift clash: " + (data.detail || "Overlapping shift"));
+      }
+    } else {
+      alert("Assignment failed: " + (data.detail || JSON.stringify(data)));
+    }
+  } catch (err) {
+    alert("Assignment error: " + err.message);
+  }
+}
+
+async function handleShortenShift(shiftId, startsAt, endsAt, workerId) {
+  const currentEnd = new Date(endsAt);
+  const promptEnd = prompt(
+    `Enter shortened end time in local ISO format (YYYY-MM-DDTHH:MM):\nCurrent end: ${currentEnd.toLocaleString()}`
+  );
+  if (!promptEnd) return;
+
+  const newEndIso = new Date(promptEnd).toISOString();
+  try {
+    const res = await fetch(`/api/assignments/${shiftId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ends_at: newEndIso }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert("Failed to shorten shift: " + (data.detail || "Unknown error"));
+      return;
+    }
+    alert("Shift shortened successfully!");
+    await selectWorker(workerId);
+  } catch (err) {
+    alert("Shorten shift failed: " + err.message);
+  }
+}
+
+async function handleDeleteShift(shiftId, workerId) {
+  if (!confirm("Are you sure you want to delete this upcoming shift?")) return;
+  try {
+    const res = await fetch(`/api/assignments/${shiftId}`, { method: "DELETE" });
+    const data = await res.json();
+    if (!res.ok) {
+      alert("Failed to delete shift: " + (data.detail || data.message || "Unknown error"));
+      return;
+    }
+    alert("Shift deleted successfully!");
+    await selectWorker(workerId);
+  } catch (err) {
+    alert("Delete shift failed: " + err.message);
+  }
+}
+
+// =============================================================================
+// STEP 5: WORKER MY HOURS SELF-SERVICE CONSOLE
+// =============================================================================
+
+async function openMyHoursModal() {
+  const modal = document.getElementById("myHoursModal");
+  if (modal) modal.classList.add("open");
+
+  const profCard = document.getElementById("myProfileCard");
+  const hoursCard = document.getElementById("myHoursProgressBar");
+  const shiftsCard = document.getElementById("myShiftsContainer");
+
+  if (profCard) profCard.innerHTML = `<div style="font-size:12px; color:var(--ink-3);">Loading worker profile...</div>`;
+  if (hoursCard) hoursCard.innerHTML = `<div style="font-size:12px; color:var(--ink-3);">Loading weekly hours...</div>`;
+  if (shiftsCard) shiftsCard.innerHTML = `<div style="font-size:12px; color:var(--ink-3);">Loading shifts...</div>`;
+
+  try {
+    const [profile, shiftsData] = await Promise.all([
+      apiFetch("/api/me/profile"),
+      apiFetch("/api/me/shifts"),
+    ]);
+
+    // 1. Profile rendering
+    if (profCard) {
+      const empNo = escapeHtml(profile.employee_no || "Unassigned");
+      const phone = escapeHtml(profile.phone || "Not on file");
+      const emName = escapeHtml(profile.emergency_contact_name || "None");
+      const emPhone = escapeHtml(profile.emergency_contact_phone || "None");
+      const joinedOn = escapeHtml(profile.joined_on || "N/A");
+      const currTunnel = profile.current_tunnel ? escapeHtml(profile.current_tunnel.name) : "No active assignment";
+
+      profCard.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #ddd; padding-bottom:6px; margin-bottom:8px;">
+          <div>
+            <span style="font-size:14px; font-weight:700;">${escapeHtml(currentUser?.full_name || currentUser?.username)}</span>
+            <span class="role-tag">${escapeHtml(currentUser?.role?.toUpperCase() || "WORKER")}</span>
+          </div>
+          <div style="font-family:var(--mono); font-size:12px;">ID: <strong>${empNo}</strong></div>
+        </div>
+        <div style="font-size:12px; display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+          <div>📍 Current Tunnel: <strong>${currTunnel}</strong></div>
+          <div>📅 Joined: <strong>${joinedOn}</strong></div>
+          <div>📞 Phone: <strong>${phone}</strong></div>
+          <div>🚨 Emergency: <strong>${emName} (${emPhone})</strong></div>
+        </div>
+      `;
+    }
+
+    // 2. Weekly hours calculation (Monday 00:00 to Sunday 23:59 local)
+    const shifts = shiftsData.shifts || [];
+    const now = new Date();
+    const currentDay = now.getDay();
+    const diffToMonday = (currentDay === 0 ? -6 : 1) - currentDay;
+    const monday = new Date(now);
+    monday.setDate(now.getDate() + diffToMonday);
+    monday.setHours(0, 0, 0, 0);
+
+    const nextMonday = new Date(monday);
+    nextMonday.setDate(monday.getDate() + 7);
+
+    let totalSecondsThisWeek = 0;
+    shifts.forEach(s => {
+      const sStart = new Date(s.starts_at);
+      const sEnd = new Date(s.ends_at);
+      const overlapStart = Math.max(sStart.getTime(), monday.getTime());
+      const overlapEnd = Math.min(sEnd.getTime(), nextMonday.getTime());
+      if (overlapEnd > overlapStart) {
+        totalSecondsThisWeek += (overlapEnd - overlapStart) / 1000;
+      }
+    });
+
+    const totalHours = (totalSecondsThisWeek / 3600).toFixed(1);
+    const limit = 48.0;
+    const isExceeded = parseFloat(totalHours) > limit;
+
+    if (hoursCard) {
+      hoursCard.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+          <span>This Week's Logged Shifts (Mon-Sun):</span>
+          <span style="font-family:var(--mono); font-size:15px; color:${isExceeded ? 'var(--red-1)' : 'var(--green-2)'};">
+            ${totalHours} / ${limit} hrs
+          </span>
+        </div>
+        <div style="height:10px; background:#eee; border:1px solid #ccc; width:100%;">
+          <div style="height:100%; width:${Math.min(100, (totalHours / limit) * 100)}%; background:${isExceeded ? 'var(--red-1)' : 'var(--green-2)'};"></div>
+        </div>
+        ${isExceeded ? `<div style="font-size:11px; color:var(--red-1); margin-top:4px;">⚠️ Weekly hours limit (${limit}h) exceeded! Notify your shift supervisor.</div>` : ""}
+      `;
+    }
+
+    // 3. Shifts list
+    if (shiftsCard) {
+      if (shifts.length === 0) {
+        shiftsCard.innerHTML = `<div style="font-size:12px; color:var(--ink-3); padding:10px;">No shifts assigned.</div>`;
+        return;
+      }
+
+      const nowTime = now.getTime();
+      shiftsCard.innerHTML = shifts.map(s => {
+        const sStart = new Date(s.starts_at);
+        const sEnd = new Date(s.ends_at);
+        const isActive = sStart.getTime() <= nowTime && nowTime < sEnd.getTime();
+        const isUpcoming = sStart.getTime() > nowTime;
+        const statusBadge = isActive
+          ? `<span style="background:var(--green-2); color:#fff; padding:2px 6px; font-size:10px; font-weight:700;">🟢 ON SHIFT NOW</span>`
+          : isUpcoming
+          ? `<span style="background:var(--saffron); color:#000; padding:2px 6px; font-size:10px; font-weight:700;">UPCOMING</span>`
+          : `<span style="background:#ddd; color:#555; padding:2px 6px; font-size:10px;">COMPLETED</span>`;
+
+        return `
+          <div style="padding:8px; border:1px solid #ccc; background:${isActive ? '#e8f5e9' : '#fff'}; display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <div style="font-weight:700; font-size:13px;">${escapeHtml(s.tunnel_name)} <span style="font-size:11px; font-weight:normal; color:#666;">(${escapeHtml(s.mine_name)})</span></div>
+              <div style="font-size:11px; color:#555; margin-top:2px;">
+                ${sStart.toLocaleString()} ➔ ${sEnd.toLocaleString()}
+              </div>
+            </div>
+            <div>${statusBadge}</div>
+          </div>
+        `;
+      }).join("");
+    }
+  } catch (err) {
+    if (shiftsCard) shiftsCard.innerHTML = `<div style="font-size:12px; color:var(--red-1);">Failed to load shift data: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function closeMyHoursModal() {
+  const modal = document.getElementById("myHoursModal");
+  if (modal) modal.classList.remove("open");
+}
+

@@ -13,11 +13,13 @@ Tests:
 10. WorkerNodeView field leakage prevention.
 11. Hierarchy protections (cannot create manager, cannot deactivate self/last manager).
 """
+import datetime
 import time
 import jwt
 import pytest
 from app.config import JWT_SECRET
 from app.main import app
+from app.models.assignment import Assignment
 from app.models.company import Company
 from app.models.gateway import Gateway
 from app.models.mine import Mine
@@ -51,6 +53,8 @@ POLICY_TABLE = {
     # ANY LOGGED IN USER (even while force_pw_change)
     ("GET", "/api/auth/me"): "any_authenticated",
     ("POST", "/api/auth/change-password"): "any_authenticated",
+    ("GET", "/api/me/shifts"): "any_authenticated",
+    ("GET", "/api/me/profile"): "any_authenticated",
     # ANY ROLE (scoped to allowed mines)
     ("GET", "/api/mines"): "any_role_scoped",
     ("GET", "/api/mines/{mine_id}/tunnels"): "any_role_scoped",
@@ -68,6 +72,13 @@ POLICY_TABLE = {
     ("GET", "/api/notifications/config"): "superiors_scoped",
     ("POST", "/api/notifications/config"): "superiors_scoped",
     ("POST", "/api/notifications/test"): "superiors_scoped",
+    ("GET", "/api/workers"): "superiors_scoped",
+    ("GET", "/api/workers/{worker_id}"): "superiors_scoped",
+    ("GET", "/api/assignments"): "superiors_scoped",
+    # MANAGER OR SAFETY OFFICER
+    ("POST", "/api/assignments"): "manager_or_safety_officer",
+    ("PATCH", "/api/assignments/{assignment_id}"): "manager_or_safety_officer",
+    ("DELETE", "/api/assignments/{assignment_id}"): "manager_or_safety_officer",
     # MANAGER ONLY
     ("POST", "/api/mines"): "manager_only",
     ("POST", "/api/mines/{mine_id}/tunnels"): "manager_only",
@@ -80,6 +91,7 @@ POLICY_TABLE = {
     ("POST", "/api/users"): "manager_only",
     ("PATCH", "/api/users/{user_id}"): "manager_only",
     ("DELETE", "/api/users/{user_id}"): "manager_only",
+    ("PUT", "/api/workers/{worker_id}/profile"): "manager_only",
     ("POST", "/api/demo/seed"): "manager_only",
     ("POST", "/api/demo/step"): "manager_only",
     ("POST", "/api/demo/toggle-live"): "manager_only",
@@ -148,6 +160,7 @@ ROLE_PERMISSIONS = {
     "any_authenticated": {ROLE_MANAGER, ROLE_SAFETY_OFFICER, ROLE_ENGINEER, ROLE_FOREMAN, ROLE_MINER},
     "any_role_scoped": {ROLE_MANAGER, ROLE_SAFETY_OFFICER, ROLE_ENGINEER, ROLE_FOREMAN, ROLE_MINER},
     "superiors_scoped": {ROLE_MANAGER, ROLE_SAFETY_OFFICER, ROLE_ENGINEER},
+    "manager_or_safety_officer": {ROLE_MANAGER, ROLE_SAFETY_OFFICER},
     "manager_only": {ROLE_MANAGER},
 }
 
@@ -458,9 +471,18 @@ def test_worker_node_view_field_leakage_protection(client, db):
     db.add(node)
     db.commit()
 
-    # Miner view
+    # Miner view (assigned to tunnel 1)
+    now = datetime.datetime.now(datetime.timezone.utc)
     miner = create_user_with_role(db, comp.id, "miner_view", ROLE_MINER)
     db.add(UserMine(user_id=miner.id, mine_id=m.id))
+    db.add(
+        Assignment(
+            user_id=miner.id,
+            tunnel_id=t.id,
+            starts_at=now - datetime.timedelta(hours=1),
+            ends_at=now + datetime.timedelta(hours=7),
+        )
+    )
     db.commit()
 
     login_client(client, miner.id)
@@ -498,9 +520,18 @@ def test_worker_placements_field_leakage_protection(client, db):
     db.add(gw)
     db.flush()
 
+    now = datetime.datetime.now(datetime.timezone.utc)
     mgr = create_user_with_role(db, comp.id, "pl_mgr", ROLE_MANAGER)
     miner = create_user_with_role(db, comp.id, "pl_miner", ROLE_MINER)
     db.add(UserMine(user_id=miner.id, mine_id=m.id))
+    db.add(
+        Assignment(
+            user_id=miner.id,
+            tunnel_id=t.id,
+            starts_at=now - datetime.timedelta(hours=1),
+            ends_at=now + datetime.timedelta(hours=7),
+        )
+    )
     db.flush()
 
     node = Node(

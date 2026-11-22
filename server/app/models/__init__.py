@@ -13,6 +13,8 @@ from app.models.node import Node
 from app.models.reading import Reading
 from app.models.audit_log import AuditLog
 from app.models.alert import Alert
+from app.models.worker_profile import WorkerProfile
+from app.models.assignment import Assignment
 
 __all__ = [
     "Base",
@@ -27,4 +29,6 @@ __all__ = [
     "Reading",
     "AuditLog",
     "Alert",
+    "WorkerProfile",
+    "Assignment",
 ]

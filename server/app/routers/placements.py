@@ -23,6 +23,7 @@ from app.schemas.placements import (
 from app.security.dependencies import (
     get_allowed_mine_ids,
     get_current_user,
+    get_visible_tunnel_ids,
     require_role,
     security_logger,
 )
@@ -74,15 +75,22 @@ def api_placements(
     else:
         scoped_mines = allowed_mines
 
-    placed = (
+    visible_tunnels = get_visible_tunnel_ids(db, user)
+    if visible_tunnels is not None and not visible_tunnels:
+        return {"placements": []}
+
+    query = (
         db.query(Node)
         .join(Gateway, Gateway.id == Node.gateway_id)
         .filter(
             Gateway.mine_id.in_(scoped_mines),
             PLACED_SQL_EXPRESSION,
         )
-        .all()
     )
+    if visible_tunnels is not None:
+        query = query.filter(Node.tunnel_id.in_(visible_tunnels))
+
+    placed = query.all()
     is_worker = user.role in WORKER_ROLES
     res = []
     for n in placed:

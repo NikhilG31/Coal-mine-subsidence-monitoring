@@ -20,6 +20,7 @@ from app.schemas.mines import (
 from app.security.dependencies import (
     get_allowed_mine_ids,
     get_current_user,
+    get_visible_tunnel_ids,
     require_role,
     security_logger,
 )
@@ -140,12 +141,15 @@ def api_get_tunnels(
     if mine_id not in allowed_mine_ids:
         raise HTTPException(status_code=404, detail="Mine not found")
 
-    tunnels = (
-        db.query(Tunnel)
-        .filter(Tunnel.mine_id == mine_id)
-        .order_by(Tunnel.id.asc())
-        .all()
-    )
+    visible_tunnels = get_visible_tunnel_ids(db, user)
+    if visible_tunnels is not None and not visible_tunnels:
+        return {"tunnels": []}
+
+    query = db.query(Tunnel).filter(Tunnel.mine_id == mine_id)
+    if visible_tunnels is not None:
+        query = query.filter(Tunnel.id.in_(visible_tunnels))
+
+    tunnels = query.order_by(Tunnel.id.asc()).all()
     return {
         "tunnels": [
             {

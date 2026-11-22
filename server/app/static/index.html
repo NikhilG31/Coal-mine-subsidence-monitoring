@@ -40,6 +40,8 @@
         </div>
 
         <button id="btnOpenAuth" class="neo-btn btn-small" style="display:none;" onclick="openAuthModal()">Sign In / Sign Up</button>
+        <button id="btnWorkers" class="neo-btn btn-small" style="display:none;" onclick="openWorkersModal()">👷 Workers &amp; Shifts</button>
+        <button id="btnMyHours" class="neo-btn btn-small" style="display:none;" onclick="openMyHoursModal()">⏱️ My Hours</button>
         <button id="btnManageMines" class="neo-btn btn-small" onclick="openMinesModal()">⛏️ Mines &amp; Gateways</button>
         <button id="btnAddUser" class="neo-btn btn-small" onclick="openAddUserModal()">+ Add User</button>
         <button id="btnNotifConfig" class="neo-btn btn-small" onclick="openNotifModal()">🔔 Alert Channels</button>
@@ -731,6 +733,85 @@
         <button type="button" class="neo-btn btn-submit btn-primary" style="width:100%;" onclick="confirmTunnelSelectionAndStartMapMode()">
           Proceed to Click Placement on Map ➔
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Superior Workers & Shifts Console -->
+  <div id="workersModal" class="modal-overlay">
+    <div class="modal-window" style="max-width:920px; width:95%;">
+      <div class="modal-header">
+        <h3>👷 WORKER DIRECTORY &amp; SHIFT ASSIGNMENTS</h3>
+        <button class="neo-btn btn-small" onclick="closeWorkersModal()">✖</button>
+      </div>
+      <div class="modal-body" style="max-height:80vh; overflow-y:auto;">
+        
+        <!-- Search & Filter Bar -->
+        <div class="zine-box" style="margin-bottom:14px; padding:10px;">
+          <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+            <input type="text" id="workerSearchInput" class="form-input" placeholder="Search by name, username, employee ID..." style="flex:2; min-width:180px;">
+            <select id="workerMineFilter" class="form-select" style="flex:1; min-width:140px;" onchange="onWorkerMineFilterChange()">
+              <option value="">All Permitted Mines</option>
+            </select>
+            <select id="workerTunnelFilter" class="form-select" style="flex:1; min-width:140px;">
+              <option value="">All Tunnels</option>
+            </select>
+            <button type="button" class="neo-btn btn-small btn-primary" onclick="searchWorkers()">Filter</button>
+            <button type="button" class="neo-btn btn-small" onclick="resetWorkerFilters()">Reset</button>
+          </div>
+        </div>
+
+        <!-- Split Grid: Workers List & Worker Detail -->
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px;">
+          
+          <!-- Left: Worker Roster -->
+          <div class="zine-box" style="padding:10px;">
+            <h4 style="font-family:var(--condensed); margin-bottom:8px;">WORKER ROSTER</h4>
+            <div id="workersListContainer" style="display:flex; flex-direction:column; gap:8px; max-height:450px; overflow-y:auto;">
+              <div style="font-size:12px; color:var(--ink-3);">Loading workers...</div>
+            </div>
+          </div>
+
+          <!-- Right: Worker Detail & Shift Form -->
+          <div id="workerDetailPane" class="zine-box" style="padding:10px;">
+            <div style="font-size:12px; color:var(--ink-3); text-align:center; padding:30px 10px;">
+              Select a worker from the roster to view their profile, assign shifts, or inspect shift history.
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Worker My Hours Self-Service Panel -->
+  <div id="myHoursModal" class="modal-overlay">
+    <div class="modal-window" style="max-width:760px; width:95%;">
+      <div class="modal-header">
+        <h3>⏱️ MY WORK SHIFTS &amp; PROFILE</h3>
+        <button class="neo-btn btn-small" onclick="closeMyHoursModal()">✖</button>
+      </div>
+      <div class="modal-body" style="max-height:80vh; overflow-y:auto;">
+        
+        <!-- Worker Profile Card -->
+        <div id="myProfileCard" class="zine-box" style="margin-bottom:14px; padding:12px; background:var(--paper);">
+          <div style="font-size:12px; color:var(--ink-3);">Loading profile...</div>
+        </div>
+
+        <!-- Weekly Hours Progress Card -->
+        <div id="myWeeklyHoursCard" class="zine-box" style="margin-bottom:14px; padding:12px; background:#fff;">
+          <h4 style="font-family:var(--condensed); margin-bottom:6px;">WEEKLY HOURS MONITOR</h4>
+          <div id="myHoursProgressBar" style="font-size:13px; font-weight:700;">Loading hours...</div>
+        </div>
+
+        <!-- Shifts Timeline -->
+        <div class="zine-box" style="padding:12px;">
+          <h4 style="font-family:var(--condensed); margin-bottom:8px;">ASSIGNED SHIFTS</h4>
+          <div id="myShiftsContainer" style="display:flex; flex-direction:column; gap:8px; max-height:300px; overflow-y:auto;">
+            <div style="font-size:12px; color:var(--ink-3);">Loading shifts...</div>
+          </div>
+        </div>
+
       </div>
     </div>
   </div>
