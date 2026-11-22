@@ -9,27 +9,34 @@ from typing import Dict, Optional
 from fastapi import APIRouter, Header, HTTPException, Request, Response
 from starlette.concurrency import run_in_threadpool
 
-from app.config import ALLOW_UNKEYED_INGEST
+from app.config import (
+    ALLOW_UNKEYED_INGEST,
+    COMMANDS_REQUIRE_HTTPS,
+    TRUST_FORWARDED_PROTO,
+)
 from app.database import SessionLocal
 from app.models.gateway import Gateway
 from app.security.dependencies import security_logger
 from app.services import clock
 from app.services.gateway_keys import verify_key
 from app.services.ingest_service import process_telemetry_packet
+from app.services.node_command_service import pending_lines_for_gateway
 from app.services.packet_codec import parse_gateway_packet
 
 router = APIRouter(tags=["ingest"])
 
-# In-memory tracking for rate-limiting ALLOW_UNKEYED_INGEST warning (at most once/hour/gateway)
+# In-memory tracking for rate-limiting warnings (at most once/hour/gateway)
 _unkeyed_warning_timestamps: Dict[str, float] = {}
+_https_warning_timestamps: Dict[int, float] = {}
 
 
 def _authenticate_and_ingest(
     body: bytes,
     raw_key: Optional[str],
     client_ip: str,
-) -> None:
-    """Synchronous worker that parses, authenticates, and persists telemetry in a dedicated session."""
+    is_https: bool,
+) -> str:
+    """Synchronous worker that parses, authenticates, persists telemetry, and returns pending commands."""
     # 1. Parsing validation (must be 38 bytes and valid structure)
     packet_data = parse_gateway_packet(body)
     gateway_mac = packet_data["gateway_mac"]
@@ -91,7 +98,26 @@ def _authenticate_and_ingest(
                 raise HTTPException(status_code=401, detail="Gateway authentication failed")
 
         # 4. Process telemetry and commit
-        process_telemetry_packet(db, packet_data, now)
+        _, _, gateway_id = process_telemetry_packet(db, packet_data, now)
+
+        # 5. Fetch pending downlink commands for nodes under this gateway
+        command_lines = pending_lines_for_gateway(db, gateway_id, now=now)
+
+        # 6. Enforce HTTPS requirement on command delivery
+        if COMMANDS_REQUIRE_HTTPS and not is_https:
+            if command_lines:
+                now_mono = time.monotonic()
+                last_warn = _https_warning_timestamps.get(gateway_id, 0.0)
+                if now_mono - last_warn >= 3600.0:
+                    security_logger.disabled = False
+                    security_logger.warning(
+                        "Withholding node commands for gateway %d: ingest arrived over plaintext HTTP",
+                        gateway_id,
+                    )
+                    _https_warning_timestamps[gateway_id] = now_mono
+                command_lines = ""
+
+        return command_lines
 
 
 @router.post("/api/ingest")
@@ -103,12 +129,18 @@ async def ingest(
     body = await request.body()
     client_ip = request.client.host if request.client else "127.0.0.1"
 
+    is_https = (request.url.scheme == "https")
+    if not is_https and TRUST_FORWARDED_PROTO:
+        if request.headers.get("x-forwarded-proto", "").lower() == "https":
+            is_https = True
+
     try:
-        await run_in_threadpool(
+        command_lines = await run_in_threadpool(
             _authenticate_and_ingest,
             body,
             x_gateway_key,
             client_ip,
+            is_https,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -117,4 +149,4 @@ async def ingest(
     except Exception as e:
         raise HTTPException(status_code=500, detail="Internal ingestion error")
 
-    return Response(content=b"", status_code=200)
+    return Response(content=command_lines, media_type="text/plain", status_code=200)

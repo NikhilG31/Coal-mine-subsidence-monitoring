@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import (
     ALLOW_UNKEYED_INGEST,
+    COMMANDS_REQUIRE_HTTPS,
     CORS_ORIGINS,
     validate_jwt_secret,
 )
@@ -26,6 +27,12 @@ if ALLOW_UNKEYED_INGEST:
         "Gateways may ingest telemetry without authentication keys. Do NOT use in production! ***"
     )
 
+if not COMMANDS_REQUIRE_HTTPS:
+    logging.getLogger("uvicorn.error").warning(
+        "*** SECURITY WARNING: COMMANDS_REQUIRE_HTTPS is DISABLED! "
+        "Node downlink commands may be transmitted over plaintext HTTP! ***"
+    )
+
 from app.routers import (
     alerts,
     assignments,
@@ -37,9 +44,11 @@ from app.routers import (
     gateways,
     health,
     history,
+    incidents,
     ingest,
     me,
     mines,
+    node_commands,
     nodes,
     notifications,
     placements,
@@ -105,6 +114,8 @@ app.include_router(workers.router)
 app.include_router(assignments.router)
 app.include_router(checkins.router)
 app.include_router(check_flags.router)
+app.include_router(incidents.router)
+app.include_router(node_commands.router)
 app.include_router(me.router)
 
 

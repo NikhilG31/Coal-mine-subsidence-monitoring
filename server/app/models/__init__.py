@@ -18,6 +18,9 @@ from app.models.assignment import Assignment
 from app.models.qr_token import QRToken
 from app.models.check_event import CheckEvent
 from app.models.check_flag import CheckFlag
+from app.models.incident import Incident
+from app.models.incident_roster import IncidentRoster
+from app.models.node_command import NodeCommand
 
 __all__ = [
     "Base",
@@ -37,4 +40,7 @@ __all__ = [
     "QRToken",
     "CheckEvent",
     "CheckFlag",
+    "Incident",
+    "IncidentRoster",
+    "NodeCommand",
 ]

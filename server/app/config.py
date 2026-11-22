@@ -116,6 +116,18 @@ if SCAN_RATE_PER_MIN <= 0:
     raise ValueError("SCAN_RATE_PER_MIN must be positive")
 
 
+# Step 7: Incidents, Roll Call, Node Commands, and Siren Configuration
+COMMAND_TTL_S: int = int(os.getenv("COMMAND_TTL_S", "120"))
+SIREN_REFRESH_S: int = int(os.getenv("SIREN_REFRESH_S", "45"))
+COMMANDS_REQUIRE_HTTPS: bool = os.getenv("COMMANDS_REQUIRE_HTTPS", "true").lower() in ("true", "1", "yes")
+TRUST_FORWARDED_PROTO: bool = os.getenv("TRUST_FORWARDED_PROTO", "false").lower() in ("true", "1", "yes")
+
+if COMMAND_TTL_S <= 0:
+    raise ValueError("COMMAND_TTL_S must be positive")
+if SIREN_REFRESH_S <= 0 or SIREN_REFRESH_S >= 60:
+    raise ValueError("SIREN_REFRESH_S must be positive and less than 60 (firmware safety timer)")
+
+
 def validate_jwt_secret() -> None:
     """Enforces that JWT_SECRET is configured, >= 32 chars, >= 12 distinct chars, and no CHANGE_ME."""
     if not JWT_SECRET or len(JWT_SECRET) < 32:

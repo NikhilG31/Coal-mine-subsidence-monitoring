@@ -20,6 +20,7 @@ from app.security.roles import ROLE_FOREMAN, ROLE_MINER
 from app.services.audit import record_audit
 from app.services import clock
 from app.services.headcount import get_worker_latest_event
+from app.services.incident_service import add_late_arrival, mark_accounted_on_exit
 from app.services.tunnel_scope import get_current_tunnel_id
 
 
@@ -157,7 +158,7 @@ def _process_check_event(
                 {"code": "no_active_shift", "message": "Worker has no active scheduled shift in this tunnel"}
             )
 
-    # On check-out: automatically clear any open check_flag for this worker
+    # On check-out: automatically clear any open check_flag and mark accounted in open incidents
     if direction == "out":
         open_flags = (
             db.query(CheckFlag)
@@ -168,6 +169,10 @@ def _process_check_event(
             flag.cleared_at = now
             flag.cleared_by = actor.id
             flag.note = "scanned out late"
+
+        mark_accounted_on_exit(db, scanner=actor, worker=worker, tunnel=tunnel, now=now)
+    elif direction == "in":
+        add_late_arrival(db, worker=worker, tunnel=tunnel, now=now)
 
     event = CheckEvent(
         user_id=worker.id,

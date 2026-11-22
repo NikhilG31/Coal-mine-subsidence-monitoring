@@ -43,6 +43,7 @@
         <button id="btnWorkers" class="neo-btn btn-small" style="display:none;" onclick="openWorkersModal()">👷 Workers &amp; Shifts</button>
         <button id="btnGateScanner" class="neo-btn btn-small" style="display:none;" onclick="openGateScannerModal()">📷 Gate Scanner</button>
         <button id="btnHeadcount" class="neo-btn btn-small" style="display:none;" onclick="openHeadcountModal()">👥 Headcount &amp; Flags</button>
+        <button id="btnIncidents" class="neo-btn btn-small" style="display:none;" onclick="openIncidentsModal()">🚨 Incidents &amp; Roll Call</button>
         <button id="btnMyHours" class="neo-btn btn-small" style="display:none;" onclick="openMyHoursModal()">⏱️ My Hours</button>
         <button id="btnManageMines" class="neo-btn btn-small" onclick="openMinesModal()">⛏️ Mines &amp; Gateways</button>
         <button id="btnAddUser" class="neo-btn btn-small" onclick="openAddUserModal()">+ Add User</button>
@@ -67,6 +68,17 @@
           📥 Download Full Excel Log (.xlsx)
         </a>
       </div>
+    </div>
+  </div>
+
+  <!-- Real-Time Emergency Evacuation Incident Alert Banner -->
+  <div id="incidentAlertBanner" style="display:none; background:#ff2d55; color:#fff; border-bottom:3px solid #000; padding:10px 16px; font-weight:700;">
+    <div style="max-width:1400px; margin:0 auto; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+      <div id="incidentBannerContent" style="display:flex; align-items:center; gap:10px;">
+        <span style="font-size:20px;">🚨</span>
+        <span id="incidentBannerText">EMERGENCY EVACUATION INCIDENT ACTIVE</span>
+      </div>
+      <button class="neo-btn btn-small btn-gold" onclick="openActiveIncidentRollCall()">📋 Open Roll Call (<span id="incidentBannerUnaccounted">0</span> Unaccounted)</button>
     </div>
   </div>
 
@@ -260,6 +272,19 @@
         <div id="drawerLocationCoords" style="font-family:var(--mono); font-size:12px; margin:4px 0;">Lat: 23.7465, Lng: 86.4140</div>
         <button id="btnReposition" class="neo-btn btn-small" onclick="repositionCurrentNode()">📍 Move on Map</button>
         <button class="neo-btn btn-small btn-danger" onclick="unplaceCurrentNode()">Remove from Map</button>
+      </div>
+
+      <!-- Hardware Buzzer Downlink Controls (Superiors only) -->
+      <div id="drawerBuzzerSection" class="metric-card" style="display:none; border-top:2px solid var(--ink); margin-top:10px;">
+        <div class="metric-label">HARDWARE DOWNLINK BUZZER</div>
+        <div style="display:flex; gap:6px; margin:8px 0;">
+          <button id="btnBuzzerOn" class="neo-btn btn-small btn-danger" onclick="sendNodeBuzzerCommand('buzzer_on')">🔊 BUZZER ON</button>
+          <button id="btnBuzzerOff" class="neo-btn btn-small btn-success" onclick="sendNodeBuzzerCommand('buzzer_off')">OFF</button>
+          <button id="btnBuzzerResume" class="neo-btn btn-small" onclick="sendNodeBuzzerCommand('resume')">RESUME</button>
+        </div>
+        <div id="drawerBuzzerStatus" style="font-family:var(--mono); font-size:11px; color:var(--ink-2);">
+          Status: None
+        </div>
       </div>
 
     </div>
@@ -822,6 +847,7 @@
   <script src="/static/app.js"></script>
   <script src="/static/checkin.js"></script>
   <script src="/static/headcount_flags.js"></script>
+  <script src="/static/incidents.js"></script>
 
   <!-- Modal: Worker QR Badge (Printable) -->
   <div id="badgeModal" class="modal-overlay">
@@ -933,6 +959,120 @@
           <div style="display:flex; gap:8px; justify-content:flex-end;">
             <button type="button" class="neo-btn" onclick="closeClearFlagModal()">Cancel</button>
             <button type="submit" class="neo-btn btn-primary">Confirm Clearance</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Incidents & Emergency Broadcast Console -->
+  <div id="incidentsModal" class="modal-overlay">
+    <div class="modal-window" style="max-width:800px; width:95%;">
+      <div class="modal-header">
+        <h3>🚨 EMERGENCY INCIDENTS &amp; EVACUATION CONSOLE</h3>
+        <button class="neo-btn btn-small" onclick="closeIncidentsModal()">✖</button>
+      </div>
+      <div class="modal-body" style="padding:16px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <h4 style="font-family:var(--condensed); margin:0;">INCIDENT LOG</h4>
+          <button id="btnOpenBroadcastForm" class="neo-btn btn-small btn-danger" onclick="toggleBroadcastForm()">
+            📢 Broadcast Evacuation Alert
+          </button>
+        </div>
+
+        <!-- Superior Broadcast Form -->
+        <div id="broadcastFormBox" class="zine-box" style="display:none; margin-bottom:14px; padding:12px; background:#fff0f3; border:2px solid #ff2d55;">
+          <h4 style="font-family:var(--condensed); color:#ff2d55; margin-bottom:10px;">NEW EMERGENCY BROADCAST</h4>
+          <form onsubmit="handleBroadcastSubmit(event)">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;">
+              <div class="form-group">
+                <label style="font-size:11px;">Target Mine:</label>
+                <select id="broadcastMineSelect" class="form-input" required></select>
+              </div>
+              <div class="form-group">
+                <label style="font-size:11px;">Target Tunnel:</label>
+                <select id="broadcastTunnelSelect" class="form-input"></select>
+              </div>
+            </div>
+            <div style="display:grid; grid-template-columns:2fr 1fr; gap:10px; margin-bottom:10px;">
+              <div class="form-group">
+                <label style="font-size:11px;">Incident Title (3-120 chars):</label>
+                <input id="broadcastTitle" type="text" class="form-input" required minlength="3" maxlength="120" placeholder="e.g. Major roof displacement detected at T-101">
+              </div>
+              <div class="form-group">
+                <label style="font-size:11px;">Hazard Level:</label>
+                <select id="broadcastLevel" class="form-input" required>
+                  <option value="3">Level 3 (Critical Evacuation)</option>
+                  <option value="2">Level 2 (Warning Alert)</option>
+                  <option value="1">Level 1 (Advisory Notice)</option>
+                </select>
+              </div>
+            </div>
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-top:8px;">
+              <label style="font-size:12px; font-weight:700; display:flex; align-items:center; gap:6px;">
+                <input type="checkbox" id="broadcastSiren" checked>
+                🔊 Activate Downlink Hardware Sirens / Node Buzzers
+              </label>
+              <div style="display:flex; gap:8px;">
+                <button type="button" class="neo-btn btn-small" onclick="toggleBroadcastForm()">Cancel</button>
+                <button type="submit" class="neo-btn btn-small btn-danger">🚀 Issue Broadcast</button>
+              </div>
+            </div>
+          </form>
+        </div>
+
+        <!-- Incidents List -->
+        <div id="incidentsListContainer" style="max-height:450px; overflow-y:auto;">
+          <div style="padding:10px; color:var(--ink-3);">Loading incidents...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Incident Roll Call -->
+  <div id="rollCallModal" class="modal-overlay">
+    <div class="modal-window" style="max-width:700px; width:95%;">
+      <div class="modal-header">
+        <h3 id="rollCallTitle">📋 EVACUATION ROLL CALL</h3>
+        <button class="neo-btn btn-small" onclick="closeRollCallModal()">✖</button>
+      </div>
+      <div class="modal-body" style="padding:16px;">
+        <div id="rollCallMetrics" style="display:flex; gap:10px; align-items:center; margin-bottom:14px; padding-bottom:10px; border-bottom:1px solid #ddd;">
+          <!-- Injected via JS -->
+        </div>
+        <div id="rollCallContainer" style="max-height:450px; overflow-y:auto;">
+          <!-- Injected via JS -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Close Incident Confirmation -->
+  <div id="closeIncidentModal" class="modal-overlay">
+    <div class="modal-window" style="max-width:500px; width:95%;">
+      <div class="modal-header">
+        <h3>CLOSE INCIDENT &amp; SILENCE SIRENS</h3>
+        <button class="neo-btn btn-small" onclick="closeCloseIncidentModal()">✖</button>
+      </div>
+      <div class="modal-body" style="padding:16px;">
+        <form onsubmit="handleCloseIncidentSubmit(event)">
+          <div id="closeIncidentWarnBox" style="display:none; background:#ffebe6; color:#de350b; border:1px solid #ffbdad; padding:10px; margin-bottom:12px; font-size:12px;"></div>
+          
+          <div id="closeIncidentConfirmRow" class="form-group" style="display:none; margin-bottom:12px;">
+            <label style="display:flex; align-items:flex-start; gap:8px; font-size:12px; font-weight:700; color:#de350b;">
+              <input type="checkbox" id="closeIncidentConfirmCheck" style="margin-top:2px;">
+              <span>I confirm all personnel have been accounted for externally outside the system.</span>
+            </label>
+          </div>
+
+          <div class="form-group" style="margin-bottom:12px;">
+            <label style="font-size:11px;">Resolution Note (Optional, max 500 chars):</label>
+            <textarea id="closeIncidentNote" class="form-input" rows="3" maxlength="500" placeholder="e.g. Subsidence stabilized, all miners verified safe at portal"></textarea>
+          </div>
+
+          <div style="display:flex; gap:8px; justify-content:flex-end;">
+            <button type="button" class="neo-btn" onclick="closeCloseIncidentModal()">Cancel</button>
+            <button type="submit" class="neo-btn btn-danger">Confirm &amp; Close Incident</button>
           </div>
         </form>
       </div>

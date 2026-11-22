@@ -6,11 +6,13 @@ The Coal Mine Subsidence Monitoring System is an IoT telemetry, geotechnical ana
 ### Data Pipeline
 ```
 [ESP32 Sensor Nodes]
-        │
-        ▼ (ESP-NOW wireless mesh, 37 bytes)
+        │ ▲
+        │ │ (ESP-NOW wireless mesh: 37-byte node telemetry / 10-byte downlink command)
+        ▼ │
 [ESP32 Gateway]
-        │
-        ▼ (HTTP POST binary packet: 38 bytes)
+        │ ▲
+        │ │ HTTP POST binary packet (38 bytes) / HTTP 200 text/plain ("CMD,node_no,ACTION,seq\n")
+        ▼ │
 [FastAPI Server]
         │
         ▼ (SQLAlchemy / Alembic / psycopg v3)
@@ -53,7 +55,8 @@ coal-mine-subsidence-monitoring/
     │       ├── e95f3b721a01_step3_placement_and_audit.py # Audit log, mine unique, gateway MAC regex, placement constraint
     │       ├── e252124b61df_step4_alerts_and_token_version.py # Alerts table, partial unique indexes, user token_version
     │       ├── c1506e641433_step5_workers_assignments_shifts.py # Worker profiles, assignments, and GIST exclusion constraint
-    │       └── e2b8b74826ca_step6_qr_checkin_headcount_flags.py # QR tokens, check events, check flags, partial unique indexes
+    │       ├── e2b8b74826ca_step6_qr_checkin_headcount_flags.py # QR tokens, check events, check flags, partial unique indexes
+    │       └── a69df82fa18b_step7_incidents_roll_call_node_commands.py # Incidents, incident roster snapshot, node commands table
     ├── app/                                      # Application package
     │   ├── __init__.py                           # App package root
     │   ├── config.py                             # Centralized environment variable loader (no defaults for DB)
@@ -74,8 +77,11 @@ coal-mine-subsidence-monitoring/
     │   │   ├── check_flag.py                     # Shift check-out exception flag database entity model
     │   │   ├── company.py                        # Company table and normalized name helper
     │   │   ├── gateway.py                        # Hardware gateway table
+    │   │   ├── incident.py                       # Emergency incident entity with status check & auto partial unique index
+    │   │   ├── incident_roster.py                # Roll call roster snapshot entity with accounting timestamps
     │   │   ├── mine.py                           # Coal mine sites table
     │   │   ├── node.py                           # Sensor nodes table (1..255 range constraint)
+    │   │   ├── node_command.py                   # Downlink node command entity with sequence wrapping & pending partial index
     │   │   ├── qr_token.py                       # QR badge token entity with partial unique active index
     │   │   ├── reading.py                        # Telemetry readings table with partial unique index
     │   │   ├── tunnel.py                         # Underground mine tunnels table
@@ -92,9 +98,11 @@ coal-mine-subsidence-monitoring/
     │   │   ├── gateways.py                       # GET/PATCH/DELETE /api/gateways, POST /api/gateways/{id}/rotate-key
     │   │   ├── health.py                         # GET /api/health monitoring endpoint
     │   │   ├── history.py                        # GET /api/history time-series queries (eager loaded)
-    │   │   ├── ingest.py                         # POST /api/ingest 38-byte binary receiver
+    │   │   ├── incidents.py                      # POST /api/incidents, GET /api/incidents, GET/POST roster, PATCH close, PATCH siren
+    │   │   ├── ingest.py                         # POST /api/ingest 38-byte binary receiver & downlink CMD text/plain response
     │   │   ├── me.py                             # GET /api/me/shifts, GET /api/me/profile
     │   │   ├── mines.py                          # GET/POST /api/mines, /api/mines/{id}/tunnels, /api/mines/{id}/gateways
+    │   │   ├── node_commands.py                  # POST /api/nodes/{id}/commands manual buzzer trigger
     │   │   ├── nodes.py                          # GET /api/nodes telemetry list
     │   │   ├── notifications.py                  # GET / POST /api/notifications/config
     │   │   ├── placements.py                     # GET /api/placements, GET /api/unplaced, PATCH/DELETE /api/nodes/{id}/placement
@@ -103,7 +111,9 @@ coal-mine-subsidence-monitoring/
     │   ├── schemas/                              # Pydantic serialization schemas and view models
     │   │   ├── __init__.py                       # Package exports
     │   │   ├── checkins.py                       # Badge, scan, headcount, and check flag schemas
+    │   │   ├── incidents.py                      # IncidentOpenRequest, IncidentResponse, RosterMemberResponse, CloseIncidentRequest
     │   │   ├── mines.py                          # Mine, tunnel, and gateway creation request schemas
+    │   │   ├── node_commands.py                  # CreateCommandRequest, CommandResponse
     │   │   ├── nodes.py                          # WorkerNodeView (strict leakage prevention) & SuperiorNodeView
     │   │   ├── placements.py                     # PlacementsResponse, WorkerPlacementView, SuperiorPlacementView
     │   │   └── workers.py                        # ProfileUpsertRequest, CreateAssignmentRequest, and worker shift schemas
@@ -118,7 +128,7 @@ coal-mine-subsidence-monitoring/
     │   ├── services/                             # Core business logic (no FastAPI imports)
     │   │   ├── audit.py                          # Atomic audit log recorder
     │   │   ├── badge_service.py                  # 256-bit token generation, SHA-256 storage, segno SVG, and revocation
-    │   │   ├── checkin_service.py                # Gate scan processing, 5s deduplication, state transitions, shift warning
+    │   │   ├── checkin_service.py                # Gate scan processing, 5s deduplication, state transitions, roll call integration
     │   │   ├── clock.py                          # Centralized timezone-aware UTC clock provider
     │   │   ├── connectivity.py                   # Single source of truth for node and gateway online calculation
     │   │   ├── flag_clearing.py                  # Manual flag clearance, note audit sanitization, manual 'out' event
@@ -126,12 +136,15 @@ coal-mine-subsidence-monitoring/
     │   │   ├── gateway_keys.py                   # Cryptographic 256-bit API key generator and SHA-256 verifier
     │   │   ├── hazard_classifier.py              # Pure function classifier matching firmware thresholds
     │   │   ├── headcount.py                      # DISTINCT ON latest check event, live inside counts, scheduled counts
-    │   │   ├── ingest_service.py                 # Packet verification, deduplication, and persistence
+    │   │   ├── incident_service.py               # Incident lifecycle, roll call snapshot, manual/gate accounting, auto-critical open
+    │   │   ├── ingest_service.py                 # Packet verification, deduplication, persistence, and downlink ack
     │   │   ├── latest_readings.py                # PostgreSQL distinct_on query optimizer for telemetry readings
+    │   │   ├── node_command_service.py           # Command queueing, sequence wrapping, line encoding, echo acknowledgment
     │   │   ├── node_placement.py                 # Node placement completeness helpers and expressions
     │   │   ├── node_serializer.py                # Telemetry dictionary serializer (superior & worker views)
     │   │   ├── packet_codec.py                   # 38-byte struct parse and pack definition
     │   │   ├── shift_service.py                  # Shift creation, duration checks, overlap detection, exclusion constraint handling
+    │   │   ├── siren_service.py                  # Periodic background siren keepalive refresh cycle
     │   │   ├── tunnel_scope.py                   # Worker current tunnel resolution and miner visible tunnel scoping
     │   │   ├── watchdog_service.py               # Watchdog offline timeout evaluation and alert auto-resolution
     │   │   ├── weekly_hours.py                   # Rolling week boundary splitting, hours summing, and warning generation
@@ -140,6 +153,7 @@ coal-mine-subsidence-monitoring/
     │       ├── app.js                            # Leaflet and dashboard client logic
     │       ├── checkin.js                        # Gate scan controller and scanner interface
     │       ├── headcount_flags.js                # Badge modal, live headcount polling, and flag resolution UI
+    │       ├── incidents.js                      # Emergency incidents, roll call roster, and buzzer control UI
     │       ├── index.html                        # Dashboard HTML layout
     │       └── style.css                         # Neo-Brutalist dashboard styles
     └── tests/                                    # Pytest test suite (runs on test database)
@@ -153,7 +167,8 @@ coal-mine-subsidence-monitoring/
         ├── test_step4_watchdog.py                # Step 4 watchdog, connectivity boundary, and scoping tests
         ├── test_step5_policy.py                  # Step 5 policy enforcement, employee profile, redaction, and N+1 tests
         ├── test_step5_shifts.py                  # Step 5 shifts, overlap rejection, exclusion constraint, scoping tests
-        └── test_step6_badges_and_headcount.py    # Step 6 QR badges, gate scanning, headcount, flags, and concurrency tests
+        ├── test_step6_badges_and_headcount.py    # Step 6 QR badges, gate scanning, headcount, flags, and concurrency tests
+        └── test_step7_incidents_and_commands.py  # Step 7 emergency incidents, roll call snapshot, commands, and siren tests
 ```
 
 ---
@@ -209,6 +224,10 @@ Configuration is loaded from `.env` in the repository root using `python-dotenv`
 | `CHECKIN_EARLY_MIN` | Step 6 | Maximum minutes before shift start that a check-in is associated with the shift | `120` |
 | `CHECK_FLAG_OVERDUE_HOURS` | Step 6 | Hours elapsed since flag creation before marking a check flag overdue | `8` |
 | `SCAN_RATE_PER_MIN` | Step 6 | Maximum permitted gate scan operations per minute per scanner user | `60` |
+| `COMMAND_TTL_S` | Step 7 | Maximum pending node command lifetime in seconds before expiry (min 10, max 3600) | `120` |
+| `SIREN_REFRESH_S` | Step 7 | Evaluation interval in seconds for background siren keepalive refresh cycle (min 10, max 300) | `45` |
+| `COMMANDS_REQUIRE_HTTPS` | Step 7 | Enforce HTTPS scheme on ingest POST before returning downlink node commands | `true` |
+| `TRUST_FORWARDED_PROTO` | Step 7 | Trust `X-Forwarded-Proto` header for HTTPS check behind TLS reverse proxy | `false` |
 
 ---
 
@@ -459,6 +478,68 @@ The schema is managed strictly via Alembic migrations. The database contains the
 - **Partial Index**:
   - `ix_check_flags_raised_at`: `(raised_at) WHERE cleared_at IS NULL`
 
+### 16. `incidents`
+- `id` (`BigInteger`, PK, autoincrement)
+- `mine_id` (`Integer`, FK -> `mines.id` ON DELETE CASCADE, nullable=False, index)
+- `tunnel_id` (`Integer`, FK -> `tunnels.id` ON DELETE RESTRICT, nullable=True, index)
+- `source` (`String(8)`, nullable=False, check constraint: `source IN ('auto', 'manual', 'sos')`)
+- `level` (`SmallInteger`, nullable=False, check constraint: `level BETWEEN 1 AND 3`)
+- `title` (`String(120)`, nullable=False)
+- `status` (`String(8)`, nullable=False, server_default=`'open'`, check constraint: `status IN ('open', 'closed')`)
+- `siren_active` (`Boolean`, nullable=False, server_default=`false`)
+- `opened_by` (`Integer`, FK -> `users.id` ON DELETE SET NULL, nullable=True)
+- `opened_at` (`TIMESTAMPTZ`, nullable=False, server_default=`now()`)
+- `closed_at` (`TIMESTAMPTZ`, nullable=True)
+- `closed_by` (`Integer`, FK -> `users.id` ON DELETE SET NULL, nullable=True)
+- `close_note` (`String(500)`, nullable=True)
+- **Constraints**:
+  - `ck_incidents_closed_sync`: `CHECK ((status = 'closed') = (closed_at IS NOT NULL))`
+- **Partial Unique Index**:
+  - `uq_incidents_open_auto`: `UNIQUE (tunnel_id) WHERE status = 'open' AND source = 'auto'`
+- **Index**:
+  - `ix_incidents_mine_opened`: `(mine_id, opened_at DESC)`
+
+### 17. `incident_roster`
+- `incident_id` (`BigInteger`, FK -> `incidents.id` ON DELETE CASCADE, nullable=False)
+- `user_id` (`Integer`, FK -> `users.id` ON DELETE CASCADE, nullable=False)
+- `PRIMARY KEY (incident_id, user_id)`
+- `added_at` (`TIMESTAMPTZ`, nullable=False, server_default=`now()`)
+- `accounted_at` (`TIMESTAMPTZ`, nullable=True)
+- `accounted_by` (`Integer`, FK -> `users.id` ON DELETE SET NULL, nullable=True)
+- **Index**:
+  - `ix_incident_roster_incident_unaccounted`: `(incident_id) WHERE accounted_at IS NULL`
+
+### 18. `node_commands`
+- `id` (`BigInteger`, PK, autoincrement)
+- `node_id` (`Integer`, FK -> `nodes.id` ON DELETE CASCADE, nullable=False)
+- `cmd` (`String(16)`, nullable=False, check constraint: `cmd IN ('buzzer_on', 'buzzer_off', 'resume')`)
+- `seq` (`Integer`, nullable=False, check constraint: `seq BETWEEN 1 AND 65535`)
+- `created_by` (`Integer`, FK -> `users.id` ON DELETE SET NULL, nullable=True)
+- `created_at` (`TIMESTAMPTZ`, nullable=False, server_default=`now()`)
+- `expires_at` (`TIMESTAMPTZ`, nullable=False)
+- `acked_at` (`TIMESTAMPTZ`, nullable=True)
+- **Partial Unique Index**:
+  - `uq_node_commands_node_pending`: `UNIQUE (node_id) WHERE acked_at IS NULL`
+- **Partial Index**:
+  - `ix_node_commands_pending`: `(node_id, expires_at) WHERE acked_at IS NULL`
+
+> **Affected Nodes and Scope (Single Source of Truth - `services/incident_service.py`)**:  
+> An emergency incident covers either a single tunnel (`tunnel_id` set) or an entire mine (`tunnel_id` is `NULL`). Its **AFFECTED nodes** are all **PLACED** nodes (`is_placed(node)`) of that tunnel or mine whose backhaul gateway is active (`active=True`).
+
+> **Roll Call Snapshot and Evacuation Accounting Rules (`services/incident_service.py`)**:  
+> - **Snapshot on Open**: When an incident is opened (manual broadcast or automatic critical hazard transition), a snapshot of all workers currently **INSIDE** the affected tunnel (or all tunnels of the mine) is atomically recorded in `incident_roster` with `accounted_at = NULL`.
+> - **Automatic Gate Accounting**: When an unaccounted worker checks out (`direction = 'out'`) at a gate scanner of that tunnel/mine, the system automatically marks them accounted (`accounted_at = now, accounted_by = scanner`).
+> - **Late Arrival Accounting**: If a worker checks in (`direction = 'in'`) after incident opening, they are dynamically appended to the incident roster as unaccounted.
+> - **Supervisor Manual Accounting**: Superiors (and foremen for their own tunnel) can manually mark a worker accounted via `POST /api/incidents/{id}/roster/{user_id}/account`.
+> - **Safe Incident Closure**: Closing an incident (`PATCH /api/incidents/{id}/close`) with unaccounted workers requires explicit confirmation (`confirm_unaccounted: true`); otherwise returns HTTP 409 `{"code": "unaccounted_workers", "count"}`. Closure automatically silences active sirens and audits the closure without leaking note text.
+
+> **Downlink Node Commands & Echo Ack Protocol (`services/node_command_service.py` & `routers/ingest.py`)**:  
+> - **Sequence Numbering**: Each command has an integer sequence number `seq` in `1..65535` per node (never 0), wrapping monotonically from 65535 back to 1.
+> - **Single Pending Guarantee**: At most one pending command (`acked_at IS NULL` and `expires_at > now`) can exist per node at any time. Creating a new command locks the node row and atomically expires older pending ones.
+> - **Delivery via Ingest Response**: When the gateway forwards telemetry via `POST /api/ingest`, the HTTP 200 response body delivers plain-text commands (`CMD,node_no,ACTION,seq\n`).
+> - **Echo Acknowledgment**: When the node receives the command, its subsequent telemetry echoes `last_cmd_seq = seq`. Ingest marks the command acked (`acked_at = now`).
+> - **Siren Keepalive Refresh Cycle (`services/siren_service.py`)**: While an incident's siren is active, the runner periodically refreshes `buzzer_on` commands every `SIREN_REFRESH_S` (45s), maintaining active audible alarms underground until silenced.
+
 > **Worker "Inside Tunnel" Headcount Definition (Single Source of Truth - `services/headcount.py`)**:  
 > A worker is defined as **INSIDE** a tunnel if and only if their latest check event (ordered by `scanned_at DESC, id DESC` using PostgreSQL `DISTINCT ON (user_id)`) has `direction = 'in'`. The tunnel they occupy is that event's `tunnel_id`. This query is calculated across all company tunnels in a single constant pass without per-worker queries.
 
@@ -705,7 +786,7 @@ Radio command sent by gateway over ESP-NOW:
 | **Step 5** | Workers and shifts | **Done** | Manager or Safety Officer assigns worker to a tunnel for a shift; second overlapping shift for the same worker is rejected with 409 naming the clashing shift; the worker sees both upcoming and past shifts under "My hours"; a miner sees only the nodes of their own tunnel (a foreman keeps mine-level view); and the weekly-hours warning appears when the limit is exceeded. | 2026-11-22 |
 | **Step 6** | QR check-in and headcount | **Done** | Badges, scanner page, check events, check flags, headcount panel. Scanning in and out changes headcount; missed check-out raises flag. | 2026-11-22 |
 | **Step 6.5** | Hardening and Phase A Fixes | **Done** | Flag clearing state-lock, back-to-back shift chaining, headcount & flag Distinct ON constant-time optimization, badge 409 conflict handling, company isolation, and centralized UTC clock. | 2026-11-23 |
-| **Step 7** | Incidents and roll call | *Not started* | Manual broadcast, roster snapshot, accounted-for marking, buzzer commands to nodes. Incident lists who is unaccounted for. | — |
+| **Step 7** | Incidents and roll call | **Done** | Manual and auto emergency incidents, roll call snapshot, automatic gate-scan accounting, downlink node commands delivery over HTTPS ingest, sequence echoing ack, and siren keepalive refresh cycle. | 2026-11-23 |
 | **Step 8** | Worker reports and SOS | *Not started* | Report form, inbox, status flow, node SOS button and SOS packet. Report moves through workflow; button press shows as SOS report within seconds. | — |
 | **Step 9** | Mine profile and output tracking | *Not started* | Profile fields, contacts, plan vs actual. Mine page shows all five profile groups. | — |
 | **Step 10** | Outbound notifications and extras | *Not started* | Telegram/WhatsApp outbound dispatch, PDF export, WebSocket updates. | — |
@@ -720,11 +801,17 @@ Radio command sent by gateway over ESP-NOW:
    Miner visibility is now strictly tunnel-scoped via the `assignments` table, active shift evaluation, and GIST exclusion constraint (`services/tunnel_scope.py`). Foremen retain mine-level visibility.
 3. **In-Memory Rate Limiting**:
    Failed login attempts are rate limited in-memory (5 failures per username + IP sliding window over 15 minutes returning HTTP 429 with `Retry-After`). In a multi-worker production deployment, this will be backed by Redis.
-4. **Commands and SOS Alerting**:
-   Ingest parses `sos_active` and returns an empty response body without dispatching commands or triggering external webhooks (slated for later steps).
-5. **In-App Alerting Scope**:
-   In Step 4, alerts are presented in-dashboard and logged in database tables. Outbound dispatches (Telegram, WhatsApp, cellular SMS, audio broadcasts) are scheduled for Step 10.
-6. **No Gateway Heartbeat in Frozen Firmware**:
+4. **Downlink Commands Delivered via Ingest Polling**:
+   Node commands (buzzer activation/silencing) are delivered downstream through the gateway's HTTP ingest response body (`CMD,node_no,ACTION,seq\n`). Commands are delivered when the gateway forwards the next telemetry packet. When nodes transmit at 5-10s intervals, command delivery latency is bounded by the node transmission cadence.
+5. **Siren Keepalive Refresh Cycle**:
+   When an incident's siren is active, the background runner periodically re-queues unacked `buzzer_on` commands every `SIREN_REFRESH_S` (45s), ensuring the command remains pending until the node receives it.
+6. **Buzzer Auto-Silence Safety Timer**:
+   Node commands have a `COMMAND_TTL_S` (120s) lifespan. On the firmware side, nodes implement an auto-silence safety timer (e.g. 60-120s) so an unacked or lost buzzer command cannot sound indefinitely without keepalive pulses.
+7. **HTTPS Enforcement for Node Commands**:
+   When `COMMANDS_REQUIRE_HTTPS=true` (the default), downlink command delivery is strictly withheld over plaintext HTTP ingest requests to prevent tampering with buzzer commands across untrusted networks. A rate-limited warning is logged once per hour per gateway. Setting `COMMANDS_REQUIRE_HTTPS=false` or configuring `TRUST_FORWARDED_PROTO=true` behind a TLS-terminating reverse proxy allows local development or behind-proxy operation.
+8. **In-App Alerting Scope**:
+   In Step 4 and Step 7, alerts and incidents are presented in-dashboard and logged in database tables. Outbound dispatches (Telegram, WhatsApp, cellular SMS, audio broadcasts) are scheduled for Step 10.
+9. **No Gateway Heartbeat in Frozen Firmware**:
    Because gateway firmware packets without nodes are not implemented in the frozen firmware struct, a gateway's `last_seen_at` reflects the arrival of its latest forwarded node packet. On quiet tunnels with no active placed nodes transmitting, a gateway could be marked offline unless periodic node transmissions occur or firmware sends status packets.
 
 ### 11.1. Firmware TODO (Owner)
@@ -737,6 +824,54 @@ The following firmware features from Step 4 require modifying packet types or fi
 ---
 
 ## 12. Changelog
+
+### 2026-11-23 - Step 7: Emergency Incidents, Roll Call Snapshot, Downlink Node Commands, and Siren Keepalive
+- **Database Migration (`a69df82fa18b`)**:
+  - Created `incidents` table with `id` (bigserial PK), `mine_id` (FK mines CASCADE), `tunnel_id` (FK tunnels RESTRICT, nullable), `source` (`CHECK IN ('auto', 'manual', 'sos')`), `level` (`CHECK BETWEEN 1 AND 3`), `title` (varchar(120)), `status` (`CHECK IN ('open', 'closed')`, default `'open'`), `siren_active` (boolean, default false), `opened_by` (FK users SET NULL), `opened_at` (timestamptz default now()), `closed_at`, `closed_by`, `close_note`.
+  - Added CHECK constraint `ck_incidents_closed_sync` enforcing `(status = 'closed') = (closed_at IS NOT NULL)`.
+  - Added PostgreSQL partial UNIQUE index `uq_incidents_open_auto` on `(tunnel_id) WHERE status = 'open' AND source = 'auto'` (strictly one open auto incident per tunnel).
+  - Added index `ix_incidents_mine_opened` on `(mine_id, opened_at DESC)`.
+  - Created `incident_roster` table with `incident_id` (FK incidents CASCADE), `user_id` (FK users CASCADE), composite PRIMARY KEY `(incident_id, user_id)`, `added_at` (timestamptz default now()), `accounted_at`, `accounted_by` (FK users SET NULL). Partial index `ix_incident_roster_incident_unaccounted` on `(incident_id) WHERE accounted_at IS NULL`.
+  - Created `node_commands` table with `id` (bigserial PK), `node_id` (FK nodes CASCADE), `cmd` (`CHECK IN ('buzzer_on', 'buzzer_off', 'resume')`), `seq` (`CHECK BETWEEN 1 AND 65535`), `created_by` (FK users SET NULL), `created_at` (timestamptz default now()), `expires_at` (timestamptz), `acked_at`.
+  - Added PostgreSQL partial UNIQUE index `uq_node_commands_node_pending` on `(node_id) WHERE acked_at IS NULL` (guarantees at most one pending command per node) and partial index `ix_node_commands_pending` on `(node_id, expires_at) WHERE acked_at IS NULL`.
+  - Verified bidirectional migration integrity with `alembic downgrade -1` and `alembic upgrade head`, and confirmed zero schema drift with `alembic check`.
+- **Incident Domain Service & Roll Call Accounting (`services/incident_service.py`)**:
+  - `open_incident`: Takes snapshot of all workers currently inside the affected tunnel(s) via `services/headcount.py` into `incident_roster`. If `siren=True`, queues `buzzer_on` commands for all affected placed nodes under active gateways. Records atomic audit log `incident.open`.
+  - `auto_open_for_critical`: Detects transition to hazard level 3 (CRITICAL) for placed nodes during ingest; wrapped in atomic savepoint `db.begin_nested()`, catches duplicate auto-incident race condition without ever failing telemetry ingestion.
+  - Automatic gate scan accounting: Hooked into `services/checkin_service.py` `record_scan` to automatically mark unaccounted workers accounted upon gate check-out (`direction = 'out'`).
+  - Late arrival tracking: Automatically appends workers scanning into an incident tunnel (`direction = 'in'`) after open time to the incident roll call as unaccounted.
+  - `mark_accounted`: Supervisor manual roll call accounting with optional note. Foremen scoped to own active tunnel. Audits `incident.account` with user ID.
+  - `close_incident`: Validates that all workers are accounted for; if unaccounted workers remain, requires `confirm_unaccounted=True` or rejects with HTTP 409 `{"code": "unaccounted_workers", "count"}`. Atomically silences active sirens with `buzzer_off` commands and records `incident.close` audit row strictly omitting note text.
+  - `set_siren`: Toggles incident siren on/off, generating corresponding `buzzer_on` or `buzzer_off` node commands.
+- **Node Command Queueing & Downlink Delivery (`services/node_command_service.py` & `routers/ingest.py`)**:
+  - `create_command`: Locks target node row (`SELECT ... FOR UPDATE`), atomically expires any existing pending command for that node, allocates next sequence number `1..65535` wrapping monotonically from 65535 back to 1 (never 0), and creates pending command with TTL = `COMMAND_TTL_S` (120s). Records audit log `node.command`.
+  - Dual-thread concurrency test proves zero duplicate sequence numbers under simultaneous queueing.
+  - `pending_lines_for_gateway`: Collects newest unexpired pending commands for placed nodes under the gateway, formatted strictly as `CMD,<node_no>,<ACTION>,<seq>\n`.
+  - Downlink delivery in ingest response: Handled in `routers/ingest.py` as `text/plain` response to gateway telemetry POST.
+  - Ingest HTTPS enforcement: When `COMMANDS_REQUIRE_HTTPS=true` (default), commands are withheld over plaintext HTTP with an hourly rate-limited warning log per gateway. Supports `TRUST_FORWARDED_PROTO=true` behind reverse proxies.
+  - `mark_acked`: When node echoes `last_cmd_seq` in subsequent telemetry packets, matches pending command and records `acked_at = now`.
+- **Background Siren Keepalive Refresh Daemon (`services/siren_service.py` & `watchdog_runner.py`)**:
+  - Background loop acquires PostgreSQL transaction advisory lock `SIREN_LOCK_KEY` (8392106).
+  - Evaluates open incidents with `siren_active=True`, finding placed nodes without pending commands or whose newest unexpired command was created $> `SIREN_REFRESH_S` (45s) ago, re-queueing `buzzer_on` commands to ensure audible alerts remain active underground.
+- **REST APIs & Role Matrix**:
+  - `POST /api/incidents`: Superior broadcast / open incident.
+  - `GET /api/incidents`: Filter by `status=open|all` and `mine_id`. Workers see open incidents for their tunnel.
+  - `GET /api/incidents/{id}/roster`: Roll call list with accounted status and timestamps. Foremen scoped to own tunnel.
+  - `POST /api/incidents/{id}/roster/{user_id}/account`: Mark worker accounted.
+  - `PATCH /api/incidents/{id}/close`: Close incident (requires confirmation if unaccounted).
+  - `PATCH /api/incidents/{id}/siren`: Toggle siren active state.
+  - `POST /api/nodes/{id}/commands`: Manual node command dispatch (superiors and foremen for own tunnel).
+  - Synchronized `POLICY_TABLE` across all 8 new routes in `tests/test_auth_and_roles.py`.
+- **Frontend Dashboard Enhancements (`static/incidents.js`, `index.html`)**:
+  - Added Incidents console modal (`#incidentsModal`) with open incident banner, mine/tunnel selectors, severity buttons, siren toggle, and active incidents table.
+  - Added Roll Call modal (`#rollCallModal`) showing accounted vs unaccounted summary, highlighted unaccounted badges, gate check-out times, and "Mark Accounted" supervisor buttons.
+  - Added Close Incident confirmation modal (`#closeIncidentModal`) warning about unaccounted miners and requiring explicit confirmation checkbox.
+  - Added Node Buzzer controls in node inspector drawer with live buzzer state indicator and "Sound Buzzer" / "Silence" buttons.
+  - Added prominent red emergency alert bar (`#incidentAlertBanner`) displaying active incident title with direct "View Roll Call" action.
+- **Automated Verification**:
+  - Added `tests/test_step7_incidents_and_commands.py` with 14 comprehensive test cases covering manual open and roster snapshot, gate scan accounting and late arrival, manual roll call accounting with foreman scoping, close incident unaccounted conflict and confirm, auto-incident open on critical reading, node commands ingest delivery and echoed ack, command expiry and replacement, sequence number 65535 wrapping, HTTPS withholding, siren keepalive refresh cycle, role matrix and tenant scoping isolation, dual-thread concurrent command queueing, Alembic downgrade/upgrade, and the full Done-When journey.
+  - Full test suite: 118 passed in pytest (0 failures).
+  - `alembic check` clean with zero schema drift.
 
 ### 2026-11-23 - Step 6.5: Hardening
 - **Flag Clearance State Verification & Headcount Protection (A1)**:

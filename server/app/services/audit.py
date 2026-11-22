@@ -16,6 +16,7 @@ def record_audit(
     entity: str,
     entity_id: Optional[int] = None,
     detail: Optional[Dict[str, Any]] = None,
+    company_id: Optional[int] = None,
 ) -> AuditLog:
     """Appends an audit record to the current transaction.
 
@@ -23,11 +24,12 @@ def record_audit(
     do not leave orphaned audit records. Sensitive keys, hashes, and passwords
     must never be passed into the detail payload.
     """
-    company_id = getattr(user, "company_id", None)
+    if company_id is None:
+        company_id = getattr(user, "company_id", None)
     if company_id is None:
         raise ValueError("Cannot record audit log without an associated company_id")
 
-    user_id = getattr(user, "id", None)
+    user_id = getattr(user, "id", None) if user else None
 
     # Sanitize detail payload: strip any accidental secret fields
     clean_detail = dict(detail or {})

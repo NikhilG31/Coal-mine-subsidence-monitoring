@@ -13,33 +13,39 @@ from sqlalchemy import text
 
 from app.config import (
     NODE_OFFLINE_AFTER_S,
+    SIREN_REFRESH_S,
     WATCHDOG_ENABLED,
     WATCHDOG_INTERVAL_S,
 )
 from app.database import SessionLocal
+from app.services import clock
 from app.services.flag_service import run_flag_cycle
+from app.services.siren_service import run_siren_cycle
 from app.services.watchdog_service import run_watchdog_cycle
 
 logger = logging.getLogger(__name__)
 
 WATCHDOG_LOCK_KEY = 8392104
 FLAG_LOCK_KEY = 8392105
+SIREN_LOCK_KEY = 8392106
 
 
 class WatchdogRunner:
-    """Manages the periodic execution of connectivity watchdog and shift check flags."""
+    """Manages the periodic execution of connectivity watchdog, shift check flags, and siren refresh."""
 
     def __init__(
         self,
-        interval_s: int = WATCHDOG_INTERVAL_S,
+        interval_s: int = SIREN_REFRESH_S // 2,
         grace_period_s: int = NODE_OFFLINE_AFTER_S,
         lock_key: int = WATCHDOG_LOCK_KEY,
         flag_lock_key: int = FLAG_LOCK_KEY,
+        siren_lock_key: int = SIREN_LOCK_KEY,
     ):
         self.interval_s = interval_s
         self.grace_period_s = grace_period_s
         self.lock_key = lock_key
         self.flag_lock_key = flag_lock_key
+        self.siren_lock_key = siren_lock_key
         self.stop_event = threading.Event()
         self.thread: Optional[threading.Thread] = None
         self.started_at: Optional[float] = None
@@ -73,7 +79,7 @@ class WatchdogRunner:
                     logger.debug("Watchdog advisory lock not acquired, skipping cycle")
                     return None
 
-            cycle_now = now or datetime.datetime.now(datetime.timezone.utc)
+            cycle_now = now or clock.utcnow()
             result = run_watchdog_cycle(db, cycle_now)
             logger.debug("Watchdog cycle completed: %s", result)
             return result
@@ -98,7 +104,7 @@ class WatchdogRunner:
                     logger.debug("Flag cycle advisory lock not acquired, skipping cycle")
                     return None
 
-            cycle_now = now or datetime.datetime.now(datetime.timezone.utc)
+            cycle_now = now or clock.utcnow()
             result = run_flag_cycle(db, cycle_now)
             logger.debug("Flag cycle completed: %s", result)
             return result
@@ -109,13 +115,39 @@ class WatchdogRunner:
         finally:
             db.close()
 
+    def run_siren_once(self, now: Optional[datetime.datetime] = None) -> Optional[int]:
+        """Executes a single siren refresh cycle under its own advisory transaction lock."""
+        db = SessionLocal()
+        try:
+            if db.bind and db.bind.dialect.name == "postgresql":
+                locked = db.execute(
+                    text("SELECT pg_try_advisory_xact_lock(:key)"),
+                    {"key": self.siren_lock_key},
+                ).scalar()
+                if not locked:
+                    db.rollback()
+                    logger.debug("Siren cycle advisory lock not acquired, skipping cycle")
+                    return None
+
+            cycle_now = now or clock.utcnow()
+            result = run_siren_cycle(db, cycle_now)
+            logger.debug("Siren cycle completed: %d refreshed", result)
+            return result
+        except Exception as exc:
+            db.rollback()
+            logger.exception("Siren cycle error: %s", exc)
+            return None
+        finally:
+            db.close()
+
     def run_once(self, now: Optional[datetime.datetime] = None) -> Optional[Dict[str, Any]]:
-        """Executes both watchdog and flag cycles independently. One failure does not stop the other."""
+        """Executes watchdog, flag, and siren cycles independently. One failure does not stop others."""
         if self.in_grace_period():
             return None
 
         watchdog_result = None
         flag_result = None
+        siren_result = None
 
         try:
             watchdog_result = self.run_watchdog_once(now)
@@ -127,9 +159,15 @@ class WatchdogRunner:
         except Exception as exc:
             logger.exception("Unexpected error in flag cycle execution: %s", exc)
 
+        try:
+            siren_result = self.run_siren_once(now)
+        except Exception as exc:
+            logger.exception("Unexpected error in siren cycle execution: %s", exc)
+
         return {
             "watchdog": watchdog_result,
             "flags": flag_result,
+            "siren": siren_result,
         }
 
     def _loop(self) -> None:

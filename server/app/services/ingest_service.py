@@ -14,17 +14,19 @@ from app.services.hazard_classifier import (
     LEVEL_INT_TO_STR,
     classify_hazard,
 )
+from app.services.incident_service import auto_open_for_critical
+from app.services.node_command_service import mark_acked
 
 
 def process_telemetry_packet(
     db: Session,
     packet_data: Dict[str, Any],
     reception_time: datetime.datetime,
-) -> Tuple[bool, str]:
+) -> Tuple[bool, str, int]:
     """Ingests a validated packet into PostgreSQL.
 
     Returns:
-        (is_duplicate, action_summary)
+        (is_duplicate, action_summary, gateway_id)
 
     Raises:
         LookupError: If gateway MAC is not registered or is marked inactive.
@@ -91,6 +93,14 @@ def process_telemetry_packet(
         .first()
     )
 
+    prev_reading = (
+        db.query(Reading)
+        .filter(Reading.node_id == node.id)
+        .order_by(Reading.ts.desc())
+        .first()
+    )
+    prev_level = prev_reading.level if prev_reading else 0
+
     is_duplicate = False
     if last_reading and last_reading.ts is not None:
         delta = abs((reception_time - last_reading.ts).total_seconds())
@@ -105,9 +115,12 @@ def process_telemetry_packet(
     node.buzzer_on = buzzer_on
     node.last_cmd_seq = last_cmd_seq
 
+    # Acknowledge downlink command if node echoed sequence number
+    mark_acked(db, node, last_cmd_seq, now=reception_time)
+
     if is_duplicate:
         db.commit()
-        return True, "duplicate_skipped"
+        return True, "duplicate_skipped", gateway.id
 
     # 6. Insert new reading row
     reading = Reading(
@@ -125,6 +138,11 @@ def process_telemetry_packet(
         level=computed_level,
     )
     db.add(reading)
+    db.flush()
+
+    # Step 7: Auto-open critical incident on transition to level 3 (CRITICAL)
+    auto_open_for_critical(db, node, reading, prev_level=prev_level, now=reception_time)
+
     db.commit()
 
-    return False, "reading_inserted"
+    return False, "reading_inserted", gateway.id
