@@ -792,3 +792,360 @@ def test_alembic_downgrade_and_upgrade_clean():
     alembic_cfg = Config("alembic.ini")
     command.downgrade(alembic_cfg, "-1")
     command.upgrade(alembic_cfg, "head")
+
+
+# =============================================================================
+# PHASE A HARDENING TESTS
+# =============================================================================
+
+def test_a1_watchdog_stale_alert_resolution(db):
+    """A1: Stale open alerts are auto-resolved if gateway inactive or node unplaced."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    comp = Company(name="Stale Alert Co", name_normalized="stale alert co")
+    db.add(comp)
+    db.flush()
+
+    mine = Mine(company_id=comp.id, name="Stale Mine", status="active", method="underground")
+    db.add(mine)
+    db.flush()
+
+    tunnel = Tunnel(mine_id=mine.id, name="Stale Tunnel", code="TUN-STALE")
+    db.add(tunnel)
+    db.flush()
+
+    # Case 1: Inactive gateway with open alerts
+    gw1 = Gateway(mac="11:11:11:11:11:11", mine_id=mine.id, name="GW 1", active=False, last_seen_at=now)
+    db.add(gw1)
+    db.flush()
+
+    node1 = Node(
+        gateway_id=gw1.id,
+        node_no=1,
+        tunnel_id=tunnel.id,
+        lat=23.7,
+        lon=85.2,
+        last_seen_at=now - datetime.timedelta(seconds=200),
+    )
+    db.add(node1)
+    db.flush()
+
+    alert_gw = Alert(company_id=comp.id, mine_id=mine.id, gateway_id=gw1.id, kind="gateway_offline", title="GW Offline", opened_at=now)
+    alert_node1 = Alert(company_id=comp.id, mine_id=mine.id, gateway_id=gw1.id, node_id=node1.id, kind="node_offline", title="Node 1 Offline", opened_at=now)
+    db.add_all([alert_gw, alert_node1])
+    db.commit()
+
+    # Case 2: Active gateway, but node is unplaced while having open alert
+    gw2 = Gateway(mac="22:22:22:22:22:22", mine_id=mine.id, name="GW 2", active=True, last_seen_at=now)
+    db.add(gw2)
+    db.flush()
+
+    node2 = Node(gateway_id=gw2.id, node_no=2, tunnel_id=None, lat=None, lon=None, last_seen_at=now - datetime.timedelta(seconds=200))
+    db.add(node2)
+    db.flush()
+
+    alert_node2 = Alert(company_id=comp.id, mine_id=mine.id, gateway_id=gw2.id, node_id=node2.id, kind="node_offline", title="Node 2 Offline", opened_at=now)
+    db.add(alert_node2)
+    db.commit()
+
+    # Run cycle
+    res = run_watchdog_cycle(db, now)
+    assert res["resolved"] == 3
+
+    db.refresh(alert_gw)
+    db.refresh(alert_node1)
+    db.refresh(alert_node2)
+    assert alert_gw.resolved_at == now
+    assert alert_node1.resolved_at == now
+    assert alert_node2.resolved_at == now
+
+
+def test_a2_placed_node_unseen_never_raises_alert(db):
+    """A2: A placed node with last_seen_at NULL never raises an alert."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    comp = Company(name="Unseen Placed Co", name_normalized="unseen placed co")
+    db.add(comp)
+    db.flush()
+
+    mine = Mine(company_id=comp.id, name="Unseen Mine", status="active", method="underground")
+    db.add(mine)
+    db.flush()
+
+    tunnel = Tunnel(mine_id=mine.id, name="Unseen Tunnel", code="TUN-UNSEEN")
+    db.add(tunnel)
+    db.flush()
+
+    gw = Gateway(mac="33:33:33:33:33:33", mine_id=mine.id, name="GW 3", active=True, last_seen_at=now)
+    db.add(gw)
+    db.flush()
+
+    node = Node(
+        gateway_id=gw.id,
+        node_no=1,
+        tunnel_id=tunnel.id,
+        lat=23.7,
+        lon=85.2,
+        last_seen_at=None,
+    )
+    db.add(node)
+    db.commit()
+
+    res = run_watchdog_cycle(db, now)
+    assert res == {"opened": 0, "resolved": 0}
+    assert db.query(Alert).count() == 0
+
+
+def test_a3_alerts_mine_id_out_of_scope_404(client, db):
+    """A3: GET /api/alerts returns 404 {"detail": "Mine not found"} when mine_id is out of scope."""
+    comp = Company(name="Scope Alert Co", name_normalized="scope alert co")
+    db.add(comp)
+    db.flush()
+
+    mine1 = Mine(company_id=comp.id, name="Mine 1", status="active", method="underground")
+    mine2 = Mine(company_id=comp.id, name="Mine 2", status="active", method="underground")
+    db.add_all([mine1, mine2])
+    db.flush()
+
+    engineer = User(
+        company_id=comp.id,
+        username="scoped_eng",
+        password_hash=hash_password("EngPass@2026"),
+        full_name="Scoped Engineer",
+        role=ROLE_ENGINEER,
+        active=True,
+    )
+    db.add(engineer)
+    db.flush()
+    db.add(UserMine(user_id=engineer.id, mine_id=mine1.id))
+    db.commit()
+
+    tok = create_session_token(engineer.id, engineer.token_version)
+
+    # Allowed mine returns 200
+    r_ok = client.get(f"/api/alerts?mine_id={mine1.id}", cookies={COOKIE_NAME: tok})
+    assert r_ok.status_code == 200
+
+    # Unassigned mine in same company returns 404
+    r_denied = client.get(f"/api/alerts?mine_id={mine2.id}", cookies={COOKIE_NAME: tok})
+    assert r_denied.status_code == 404
+    assert r_denied.json() == {"detail": "Mine not found"}
+
+    # Nonexistent mine returns 404
+    r_none = client.get("/api/alerts?mine_id=99999", cookies={COOKIE_NAME: tok})
+    assert r_none.status_code == 404
+    assert r_none.json() == {"detail": "Mine not found"}
+
+
+def test_a4_gateway_and_mine_routes_mine_scoping_404(client, db):
+    """A4: Gateway and mine routes enforce get_allowed_mine_ids and return 404 for unpermitted mines."""
+    comp = Company(name="A4 Co", name_normalized="a4 co")
+    db.add(comp)
+    db.flush()
+
+    mine1 = Mine(company_id=comp.id, name="Mine A4-1", status="active", method="underground")
+    mine2 = Mine(company_id=comp.id, name="Mine A4-2", status="active", method="underground")
+    db.add_all([mine1, mine2])
+    db.flush()
+
+    gw2 = Gateway(mac="44:44:44:44:44:44", mine_id=mine2.id, name="GW in Mine 2", active=True)
+    db.add(gw2)
+    db.flush()
+
+    # Manager scoped strictly to Mine 1
+    mgr = User(
+        company_id=comp.id,
+        username="mgr_mine1_only",
+        password_hash=hash_password("MgrPass@2026"),
+        full_name="Manager Mine 1",
+        role=ROLE_MANAGER,
+        active=True,
+    )
+    db.add(mgr)
+    db.flush()
+    db.add(UserMine(user_id=mgr.id, mine_id=mine1.id))
+    db.commit()
+
+    tok = create_session_token(mgr.id, mgr.token_version)
+
+    # PATCH /api/gateways/{id}
+    r = client.patch(f"/api/gateways/{gw2.id}", json={"name": "New Name"}, cookies={COOKIE_NAME: tok})
+    assert r.status_code == 404
+
+    # POST /api/gateways/{id}/rotate-key
+    r = client.post(f"/api/gateways/{gw2.id}/rotate-key", cookies={COOKIE_NAME: tok})
+    assert r.status_code == 404
+
+    # DELETE /api/gateways/{id}
+    r = client.delete(f"/api/gateways/{gw2.id}", cookies={COOKIE_NAME: tok})
+    assert r.status_code == 404
+
+    # GET /api/mines/{id}/gateways
+    r = client.get(f"/api/mines/{mine2.id}/gateways", cookies={COOKIE_NAME: tok})
+    assert r.status_code == 404
+
+    # POST /api/mines/{id}/gateways
+    r = client.post(f"/api/mines/{mine2.id}/gateways", json={"name": "GW", "mac": "55:55:55:55:55:55"}, cookies={COOKIE_NAME: tok})
+    assert r.status_code == 404
+
+    # POST /api/mines/{id}/tunnels
+    r = client.post(f"/api/mines/{mine2.id}/tunnels", json={"name": "T2", "code": "T-2"}, cookies={COOKIE_NAME: tok})
+    assert r.status_code == 404
+
+
+def test_a5_nodes_online_watchdog_boundary_agreement(client, db, monkeypatch):
+    """A5: /api/nodes 'online' agrees with watchdog at the exact threshold boundary."""
+    fixed_dt = datetime.datetime.now(datetime.timezone.utc)
+    fixed_ts = fixed_dt.timestamp()
+    monkeypatch.setattr(time, "time", lambda: fixed_ts)
+
+    comp = Company(name="A5 Co", name_normalized="a5 co")
+    db.add(comp)
+    db.flush()
+
+    mine = Mine(company_id=comp.id, name="Mine A5", status="active", method="underground")
+    db.add(mine)
+    db.flush()
+
+    tunnel = Tunnel(mine_id=mine.id, name="Tunnel A5", code="TUN-A5")
+    db.add(tunnel)
+    db.flush()
+
+    gw = Gateway(mac="66:66:66:66:66:66", mine_id=mine.id, name="GW A5", active=True, last_seen_at=fixed_dt)
+    db.add(gw)
+    db.flush()
+
+    # 1. Exact boundary: last_seen_at == fixed_dt - NODE_OFFLINE_AFTER_S
+    # delta == 35.0 <= 35 -> online
+    node = Node(
+        gateway_id=gw.id,
+        node_no=7,
+        tunnel_id=tunnel.id,
+        lat=23.7,
+        lon=85.2,
+        last_seen_at=fixed_dt - datetime.timedelta(seconds=NODE_OFFLINE_AFTER_S),
+    )
+    db.add(node)
+    db.commit()
+
+    mgr = User(
+        company_id=comp.id,
+        username="mgr_a5",
+        password_hash=hash_password("MgrPass@2026"),
+        full_name="Manager A5",
+        role=ROLE_MANAGER,
+        active=True,
+    )
+    db.add(mgr)
+    db.commit()
+    tok = create_session_token(mgr.id, mgr.token_version)
+
+    # Watchdog considers node online (delta <= 35) -> opened == 0
+    res1 = run_watchdog_cycle(db, fixed_dt)
+    assert res1["opened"] == 0
+
+    # /api/nodes also reports online: True at exact boundary
+    r_nodes = client.get("/api/nodes", cookies={COOKIE_NAME: tok})
+    assert r_nodes.status_code == 200
+    dto = next(n for n in r_nodes.json()["nodes"] if n["node_id"] == 7)
+    assert dto["online"] is True
+
+    # 2. Beyond boundary: last_seen_at == fixed_dt - (NODE_OFFLINE_AFTER_S + 1)
+    # delta == 36.0 > 35 -> offline
+    node.last_seen_at = fixed_dt - datetime.timedelta(seconds=NODE_OFFLINE_AFTER_S + 1)
+    db.commit()
+
+    # Watchdog considers node offline -> opens 1 alert
+    res2 = run_watchdog_cycle(db, fixed_dt)
+    assert res2["opened"] == 1
+
+    # /api/nodes also reports online: False
+    r_nodes2 = client.get("/api/nodes", cookies={COOKIE_NAME: tok})
+    dto2 = next(n for n in r_nodes2.json()["nodes"] if n["node_id"] == 7)
+    assert dto2["online"] is False
+
+
+def test_a6_alert_titles_format(db):
+    """A6: Alert titles use the node NUMBER and the gateway name, e.g. 'Node 3 offline (GW name / Mine / Tunnel)'."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    comp = Company(name="A6 Title Co", name_normalized="a6 title co")
+    db.add(comp)
+    db.flush()
+
+    mine = Mine(company_id=comp.id, name="Jharia Colliery", status="active", method="underground")
+    db.add(mine)
+    db.flush()
+
+    tunnel = Tunnel(mine_id=mine.id, name="Main Haulage", code="TUN-MH")
+    db.add(tunnel)
+    db.flush()
+
+    gw = Gateway(mac="77:77:77:77:77:77", mine_id=mine.id, name="North Incline GW", active=True, last_seen_at=now)
+    db.add(gw)
+    db.flush()
+
+    node = Node(
+        gateway_id=gw.id,
+        node_no=3,
+        tunnel_id=tunnel.id,
+        lat=23.7,
+        lon=85.2,
+        last_seen_at=now - datetime.timedelta(seconds=NODE_OFFLINE_AFTER_S + 10),
+    )
+    db.add(node)
+    db.commit()
+
+    res = run_watchdog_cycle(db, now)
+    assert res["opened"] == 1
+
+    alert = db.query(Alert).filter(Alert.node_id == node.id).first()
+    assert alert is not None
+    assert alert.title == "Node 3 offline (North Incline GW / Jharia Colliery / Main Haulage)"
+
+
+def test_a7_login_hardening_inactive_timing_and_patch_deactivation(client, db):
+    """A7: Inactive user login returns 401 via dummy hash; PATCH deactivation invalidates token."""
+    comp = Company(name="A7 Co", name_normalized="a7 co")
+    db.add(comp)
+    db.flush()
+
+    admin = User(
+        company_id=comp.id,
+        username="admin_a7",
+        password_hash=hash_password("AdminPass@2026"),
+        full_name="Admin A7",
+        role=ROLE_MANAGER,
+        active=True,
+    )
+    user = User(
+        company_id=comp.id,
+        username="user_a7",
+        password_hash=hash_password("UserPass@2026"),
+        full_name="User A7",
+        role=ROLE_ENGINEER,
+        active=True,
+    )
+    db.add_all([admin, user])
+    db.commit()
+
+    admin_tok = create_session_token(admin.id, admin.token_version)
+    user_tok = create_session_token(user.id, user.token_version)
+
+    # Active user accesses /api/auth/me
+    assert client.get("/api/auth/me", cookies={COOKIE_NAME: user_tok}).status_code == 200
+
+    # Deactivate via PATCH /api/users/{id}
+    r_patch = client.patch(
+        f"/api/users/{user.id}",
+        json={"active": False},
+        cookies={COOKIE_NAME: admin_tok},
+    )
+    assert r_patch.status_code == 200
+    assert r_patch.json()["active"] is False
+
+    # Old cookie gets 401
+    assert client.get("/api/auth/me", cookies={COOKIE_NAME: user_tok}).status_code == 401
+
+    # Login attempt for deactivated account returns 401
+    r_login = client.post("/api/auth/login", json={"username": "user_a7", "password": "UserPass@2026"})
+    assert r_login.status_code == 401
+    assert r_login.json()["detail"] == "Invalid username or password"
+

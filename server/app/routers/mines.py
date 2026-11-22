@@ -7,8 +7,6 @@ import datetime
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
-
-from app.config import OFFLINE_AFTER_S
 from app.database import get_db
 from app.models.gateway import Gateway
 from app.models.mine import Mine
@@ -171,6 +169,10 @@ def api_create_tunnel(
     db: Session = Depends(get_db),
 ):
     """Adds a new underground tunnel to a mine (Manager only)."""
+    allowed_mine_ids = get_allowed_mine_ids(db, user)
+    if mine_id not in allowed_mine_ids:
+        raise HTTPException(status_code=404, detail="Mine not found")
+
     mine = (
         db.query(Mine)
         .filter(Mine.id == mine_id, Mine.company_id == user.company_id)
@@ -240,6 +242,10 @@ def api_create_gateway(
     db: Session = Depends(get_db),
 ):
     """Registers a hardware gateway and displays its API key once (Manager only)."""
+    allowed_mine_ids = get_allowed_mine_ids(db, user)
+    if mine_id not in allowed_mine_ids:
+        raise HTTPException(status_code=404, detail="Mine not found")
+
     mine = (
         db.query(Mine)
         .filter(Mine.id == mine_id, Mine.company_id == user.company_id)
@@ -305,6 +311,10 @@ def api_get_mine_gateways(
     db: Session = Depends(get_db),
 ):
     """Lists hardware gateways bound to a mine (Manager only; excludes key/hash)."""
+    allowed_mine_ids = get_allowed_mine_ids(db, user)
+    if mine_id not in allowed_mine_ids:
+        raise HTTPException(status_code=404, detail="Mine not found")
+
     mine = (
         db.query(Mine)
         .filter(Mine.id == mine_id, Mine.company_id == user.company_id)

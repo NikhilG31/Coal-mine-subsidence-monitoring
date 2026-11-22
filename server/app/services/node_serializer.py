@@ -20,7 +20,6 @@ def serialize_node(
     node: Node,
     latest_reading: Optional[Reading],
     now_ts: float,
-    offline_after_s: int = 35,
 ) -> Dict[str, Any]:
     """Serializes a Node record into the full dictionary representation for superiors."""
     mac = node.gateway.mac if node.gateway else "UNKNOWN"
@@ -100,7 +99,6 @@ def serialize_worker_node(
     node: Node,
     latest_reading: Optional[Reading],
     now_ts: float,
-    offline_after_s: int = 35,
 ) -> Dict[str, Any]:
     """Serializes a Node record into the restricted dictionary representation for workers.
 
@@ -109,7 +107,7 @@ def serialize_worker_node(
     low_battery, online, age_s.
     Must NOT carry gateway MAC or name, counter, score, reasons, or placed_by.
     """
-    full = serialize_node(node, latest_reading, now_ts, offline_after_s)
+    full = serialize_node(node, latest_reading, now_ts)
     return {
         "node_id": full["node_id"],
         "location_name": full["location_name"],

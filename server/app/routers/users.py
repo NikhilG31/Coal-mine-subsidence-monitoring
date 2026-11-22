@@ -196,8 +196,8 @@ def api_patch_user(
 
     if req.active is not None:
         target_user.active = req.active
-        if req.active is False and hasattr(target_user, "token_version"):
-            target_user.token_version = (getattr(target_user, "token_version", 0) or 0) + 1
+        if req.active is False:
+            target_user.token_version += 1
         changes["active"] = req.active
 
     if req.reset_password:
@@ -207,8 +207,7 @@ def api_patch_user(
             raise HTTPException(status_code=400, detail=str(e))
         target_user.password_hash = hash_password(req.reset_password)
         target_user.force_pw_change = True
-        if hasattr(target_user, "token_version"):
-            target_user.token_version = (getattr(target_user, "token_version", 0) or 0) + 1
+        target_user.token_version += 1
         changes["reset_password"] = True
 
     if req.mine_ids is not None:
@@ -276,8 +275,7 @@ def api_delete_user(
             raise HTTPException(status_code=400, detail="Cannot deactivate the last active manager")
 
     target_user.active = False
-    if hasattr(target_user, "token_version"):
-        target_user.token_version = (getattr(target_user, "token_version", 0) or 0) + 1
+    target_user.token_version += 1
     record_audit(
         db,
         user,

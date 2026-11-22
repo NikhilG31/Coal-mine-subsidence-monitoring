@@ -10,7 +10,6 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
-from app.config import OFFLINE_AFTER_S
 from app.database import get_db
 from app.models.gateway import Gateway
 from app.models.mine import Mine
@@ -77,7 +76,7 @@ def api_gateways(
     latest_map = get_latest_readings(db, node_ids)
 
     nodes_list = [
-        serialize_node(n, latest_map.get(n.id), now_ts, offline_after_s=OFFLINE_AFTER_S)
+        serialize_node(n, latest_map.get(n.id), now_ts)
         for n in nodes
     ]
 
@@ -128,11 +127,16 @@ def api_patch_gateway(
     user: User = Depends(require_role(ROLE_MANAGER)),
     db: Session = Depends(get_db),
 ):
-    """Updates gateway name or active status (Manager only, within company)."""
+    """Updates gateway name or active status (Manager only, within company and mine scope)."""
+    allowed_mine_ids = get_allowed_mine_ids(db, user)
     gw = (
         db.query(Gateway)
         .join(Mine, Mine.id == Gateway.mine_id)
-        .filter(Gateway.id == gateway_id, Mine.company_id == user.company_id)
+        .filter(
+            Gateway.id == gateway_id,
+            Mine.company_id == user.company_id,
+            Gateway.mine_id.in_(allowed_mine_ids),
+        )
         .first()
     )
     if not gw:
@@ -175,10 +179,15 @@ def api_rotate_gateway_key(
     db: Session = Depends(get_db),
 ):
     """Generates a new API key for the gateway, invalidating previous keys (Manager only)."""
+    allowed_mine_ids = get_allowed_mine_ids(db, user)
     gw = (
         db.query(Gateway)
         .join(Mine, Mine.id == Gateway.mine_id)
-        .filter(Gateway.id == gateway_id, Mine.company_id == user.company_id)
+        .filter(
+            Gateway.id == gateway_id,
+            Mine.company_id == user.company_id,
+            Gateway.mine_id.in_(allowed_mine_ids),
+        )
         .first()
     )
     if not gw:
@@ -216,10 +225,15 @@ def api_delete_gateway(
     db: Session = Depends(get_db),
 ):
     """Disables a hardware gateway (Manager only; sets active=false)."""
+    allowed_mine_ids = get_allowed_mine_ids(db, user)
     gw = (
         db.query(Gateway)
         .join(Mine, Mine.id == Gateway.mine_id)
-        .filter(Gateway.id == gateway_id, Mine.company_id == user.company_id)
+        .filter(
+            Gateway.id == gateway_id,
+            Mine.company_id == user.company_id,
+            Gateway.mine_id.in_(allowed_mine_ids),
+        )
         .first()
     )
     if not gw:

@@ -8,7 +8,6 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.config import OFFLINE_AFTER_S
 from app.database import get_db
 from app.models.gateway import Gateway
 from app.models.node import Node
@@ -78,10 +77,10 @@ def api_nodes(
     for n in nodes:
         reading = latest_map.get(n.id)
         if is_worker:
-            data = serialize_worker_node(n, reading, now_ts, offline_after_s=OFFLINE_AFTER_S)
+            data = serialize_worker_node(n, reading, now_ts)
             nodes_list.append(WorkerNodeView.model_validate(data))
         else:
-            data = serialize_node(n, reading, now_ts, offline_after_s=OFFLINE_AFTER_S)
+            data = serialize_node(n, reading, now_ts)
             nodes_list.append(SuperiorNodeView.model_validate(data))
 
     return {"now": now_ts, "nodes": nodes_list}

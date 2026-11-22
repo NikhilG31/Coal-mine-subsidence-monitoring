@@ -44,15 +44,20 @@ coal-mine-subsidence-monitoring/
     ├── requirements.txt                          # Production runtime dependencies (psycopg v3, PyJWT, openpyxl, FastAPI)
     ├── requirements-dev.txt                      # Development & test dependencies (-r requirements.txt, pytest, httpx)
     ├── migrations/                               # Alembic database migrations
+    │   ├── README                                # Migrations documentation
     │   ├── env.py                                # Migration environment runner (compare_type & defaults enabled)
     │   ├── script.py.mako                        # Revision script template
     │   └── versions/                             # Schema migration versions
     │       ├── c79d6f612a5e_create_step1_tables.py # Initial 8 core PostgreSQL tables
-    │       └── d84e2a87b91f_step1_hardening.py   # Server defaults, check constraint, index cleanup
+    │       ├── d84e2a87b91f_step1_hardening.py   # Server defaults, check constraint, index cleanup
+    │       ├── e95f3b721a01_step3_placement_and_audit.py # Audit log, mine unique, gateway MAC regex, placement constraint
+    │       └── e252124b61df_step4_alerts_and_token_version.py # Alerts table, partial unique indexes, user token_version
     ├── app/                                      # Application package
+    │   ├── __init__.py                           # App package root
     │   ├── config.py                             # Centralized environment variable loader (no defaults for DB)
     │   ├── database.py                           # SQLAlchemy engine, SessionLocal factory, and Base
     │   ├── main.py                               # FastAPI application factory, router registration, static mount
+    │   ├── watchdog_runner.py                    # Background offline detection daemon with PostgreSQL advisory lock
     │   ├── cli/                                  # Command-line tools
     │   │   └── seed_manager.py                   # Idempotent Company & Manager bootstrapping CLI
     │   ├── dev/                                  # Development-only helpers
@@ -60,6 +65,8 @@ coal-mine-subsidence-monitoring/
     │   │   └── simulator.py                      # Multi-node 38-byte ESP packet simulator
     │   ├── models/                               # SQLAlchemy ORM models (one file per table)
     │   │   ├── __init__.py                       # Package exports for all models
+    │   │   ├── alert.py                          # Alert model with offline states and partial unique constraints
+    │   │   ├── audit_log.py                      # Immutable audit log model
     │   │   ├── company.py                        # Company table and normalized name helper
     │   │   ├── gateway.py                        # Hardware gateway table
     │   │   ├── mine.py                           # Coal mine sites table
@@ -69,31 +76,42 @@ coal-mine-subsidence-monitoring/
     │   │   └── user.py                           # Users and UserMine association tables
     │   ├── routers/                              # FastAPI area routers (HTTP handling only)
     │   │   ├── alerts.py                         # GET /api/alerts, POST /api/alerts/{id}/ack
-    │   │   ├── auth.py                           # POST /api/auth/login, GET /api/auth/me, POST /api/auth/logout
+    │   │   ├── auth.py                           # POST /api/auth/login, GET /api/auth/me, POST /api/auth/logout, POST /api/auth/change-password
     │   │   ├── demo.py                           # /api/demo/* simulation and testing routes
     │   │   ├── export.py                         # GET /api/export.xlsx workbook export
-    │   │   ├── gateways.py                       # GET /api/gateways hierarchy
+    │   │   ├── gateways.py                       # GET/PATCH/DELETE /api/gateways, POST /api/gateways/{id}/rotate-key
     │   │   ├── health.py                         # GET /api/health monitoring endpoint
     │   │   ├── history.py                        # GET /api/history time-series queries (eager loaded)
     │   │   ├── ingest.py                         # POST /api/ingest 38-byte binary receiver
+    │   │   ├── mines.py                          # GET/POST /api/mines, /api/mines/{id}/tunnels, /api/mines/{id}/gateways
     │   │   ├── nodes.py                          # GET /api/nodes telemetry list
     │   │   ├── notifications.py                  # GET / POST /api/notifications/config
-    │   │   └── placements.py                     # GET/POST /api/placements, DELETE, GET /api/unplaced
+    │   │   ├── placements.py                     # GET /api/placements, GET /api/unplaced, PATCH/DELETE /api/nodes/{id}/placement
+    │   │   └── users.py                          # GET/POST /api/users, PATCH/DELETE /api/users/{id}
     │   ├── schemas/                              # Pydantic serialization schemas and view models
     │   │   ├── __init__.py                       # Package exports
-    │   │   └── nodes.py                          # WorkerNodeView (strict leakage prevention) & SuperiorNodeView
+    │   │   ├── mines.py                          # Mine, tunnel, and gateway creation request schemas
+    │   │   ├── nodes.py                          # WorkerNodeView (strict leakage prevention) & SuperiorNodeView
+    │   │   └── placements.py                     # PlacementsResponse, WorkerPlacementView, SuperiorPlacementView
     │   ├── security/                             # Authentication, RBAC, and cryptographic primitives
     │   │   ├── __init__.py                       # Security package exports
     │   │   ├── dependencies.py                   # FastAPI dependencies (auth, role checks, mine scoping)
+    │   │   ├── password_policy.py                # Centralized password complexity rules
     │   │   ├── passwords.py                      # PBKDF2-HMAC-SHA256 (600k iter) & legacy hash verification
     │   │   ├── rate_limit.py                     # Sliding-window IP+username login brute-force limiter
     │   │   ├── roles.py                          # Role definitions and role grouping logic
     │   │   └── tokens.py                         # HS256 JWT session tokens and cookie management
     │   ├── services/                             # Core business logic (no FastAPI imports)
+    │   │   ├── audit.py                          # Atomic audit log recorder
+    │   │   ├── connectivity.py                   # Single source of truth for node and gateway online calculation
+    │   │   ├── gateway_keys.py                   # Cryptographic 256-bit API key generator and SHA-256 verifier
     │   │   ├── hazard_classifier.py              # Pure function classifier matching firmware thresholds
     │   │   ├── ingest_service.py                 # Packet verification, deduplication, and persistence
+    │   │   ├── latest_readings.py                # PostgreSQL distinct_on query optimizer for telemetry readings
+    │   │   ├── node_placement.py                 # Node placement completeness helpers and expressions
     │   │   ├── node_serializer.py                # Telemetry dictionary serializer (superior & worker views)
-    │   │   └── packet_codec.py                   # 38-byte struct parse and pack definition
+    │   │   ├── packet_codec.py                   # 38-byte struct parse and pack definition
+    │   │   └── watchdog_service.py               # Watchdog offline timeout evaluation and alert auto-resolution
     │   └── static/                               # Web dashboard client files
     │       ├── app.js                            # Leaflet and dashboard client logic
     │       ├── index.html                        # Dashboard HTML layout
@@ -104,7 +122,9 @@ coal-mine-subsidence-monitoring/
         ├── test_classifier.py                    # Spec matrix unit tests for hazard classifier
         ├── test_dashboard_routes.py              # Dashboard API endpoints and placement workflow tests
         ├── test_ingest.py                        # Packet length, gateway check, dedup, and classification tests
-        └── test_seed.py                          # seed_manager idempotency and password reset tests
+        ├── test_seed.py                          # seed_manager idempotency and password reset tests
+        ├── test_step3_phase_b.py                 # Step 3 gateway keys, placement, audit, and manager journey tests
+        └── test_step4_watchdog.py                # Step 4 watchdog, connectivity boundary, and scoping tests
 ```
 
 ---
@@ -217,7 +237,7 @@ python -m pytest -v
 
 ## 6. Data Model
 
-The schema is managed strictly via Alembic migrations. The database contains only these 8 core tables:
+The schema is managed strictly via Alembic migrations. The database contains these 10 core tables:
 
 ### 1. `companies`
 - `id` (`Integer`, PK, autoincrement)
@@ -583,6 +603,16 @@ The following firmware features from Step 4 require modifying packet types or fi
 ---
 
 ## 12. Changelog
+
+### 2026-11-22 - Step 4.5: Hardening
+- **Stale Alert Resolution (A1)**: Watchdog cycle automatically resolves open alerts whose subject is no longer eligible: inactive gateways (`active=False`) and unplaced nodes (`is_placed=False`) in a single pass per cycle.
+- **Unseen Placed Node Protection (A2)**: Placed nodes with `last_seen_at = NULL` are skipped by the watchdog and never raise alerts.
+- **Alert Scoping & Role Hardening (A3)**: Removed non-existent `admin` role branches in `GET /api/alerts` and `POST /api/alerts/{id}/ack`. Out-of-scope `mine_id` query returns HTTP 404 `{"detail": "Mine not found"}`.
+- **Gateway & Mine Route Scoping (A4)**: `PATCH /api/gateways/{id}`, `POST /api/gateways/{id}/rotate-key`, `DELETE /api/gateways/{id}`, `GET/POST /api/mines/{id}/gateways`, and `POST /api/mines/{id}/tunnels` enforce that the gateway's or mine's ID is within `get_allowed_mine_ids(db, user)`, returning HTTP 404 otherwise.
+- **Single Source of Truth for Online Status (A5)**: Removed `offline_after_s` parameter from `serialize_node` and `serialize_worker_node`; removed `OFFLINE_AFTER_S` import from routers; verified with unit tests that `/api/nodes` online calculation agrees with the watchdog at the exact threshold boundary.
+- **Watchdog Query Optimization and Title Formatting (A6)**: Replaced per-node alert queries with a single bulk query per cycle (`open_alerts` dictionary lookup); formatted alert titles using node number and gateway name (`Node {node.node_no} offline ({gw.name} / {mine.name} / {tunnel.name})`); added non-sensitive INFO logging for alert open and resolution events.
+- **Login Timing Hardening & Session Version Cleanup (A7)**: Always execute PBKDF2 `verify_password` against a constant dummy hash for unknown OR inactive users, mitigating timing attacks on deactivated accounts. Removed `getattr`/`hasattr` fallbacks for `token_version` column. Added comprehensive tests for session invalidation on password change, administrative reset, and user deactivation.
+- **Documentation & Test Verification (A8)**: Corrected Section 6 table count to 10 tables, updated directory map from real filesystem tree, corrected `placements.py` endpoint documentation, and verified test suite execution. All 66 tests passing.
 
 ### 2026-11-22 - Step 4: Offline Detection, Watchdog Runner, Alerts, and Token Invalidation
 - **Database Migration (`e252124b61df`)**:

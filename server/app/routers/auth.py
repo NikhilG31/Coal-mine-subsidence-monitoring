@@ -38,6 +38,11 @@ from app.services.audit import record_audit
 
 router = APIRouter(tags=["auth"])
 
+DUMMY_PASSWORD_HASH = (
+    "pbkdf2_sha256$600000$00000000000000000000000000000000$"
+    "0000000000000000000000000000000000000000000000000000000000000000"
+)
+
 
 class LoginRequest(BaseModel):
     username: str
@@ -74,20 +79,21 @@ def api_login(
 
     user = db.query(User).filter(User.username == clean_username).first()
 
-    # Constant-time dummy hash verification if user not found to prevent timing enumeration
-    if not user:
-        verify_password(
-            req.password,
-            "pbkdf2_sha256$600000$00000000000000000000000000000000$0000000000000000000000000000000000000000000000000000000000000000",
-        )
-        record_login_failure(clean_username, client_ip)
-        security_logger.info("Failed login: unknown user '%s' from IP '%s'", clean_username, client_ip)
-        raise HTTPException(status_code=401, detail="Invalid username or password")
-
-    if not user.active or not verify_password(req.password, user.password_hash):
+    # Constant-time dummy hash verification if user is unknown OR inactive to prevent timing enumeration
+    if not user or not user.active:
+        verify_password(req.password, DUMMY_PASSWORD_HASH)
         record_login_failure(clean_username, client_ip)
         security_logger.info(
-            "Failed login: invalid credentials or inactive user '%s' from IP '%s'",
+            "Failed login: unknown or inactive user '%s' from IP '%s'",
+            clean_username,
+            client_ip,
+        )
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    if not verify_password(req.password, user.password_hash):
+        record_login_failure(clean_username, client_ip)
+        security_logger.info(
+            "Failed login: invalid credentials for user '%s' from IP '%s'",
             clean_username,
             client_ip,
         )
@@ -102,7 +108,7 @@ def api_login(
         db.commit()
 
     # Issue JWT in HttpOnly cookie
-    token = create_session_token(user.id, token_version=getattr(user, "token_version", 0))
+    token = create_session_token(user.id, token_version=user.token_version)
     set_session_cookie(response, token)
 
     security_logger.info(
@@ -191,8 +197,7 @@ def api_change_password(
 
     user.password_hash = hash_password(new_pw)
     user.force_pw_change = False
-    if hasattr(user, "token_version"):
-        user.token_version = (getattr(user, "token_version", 0) or 0) + 1
+    user.token_version += 1
     record_audit(
         db,
         user,
@@ -204,7 +209,7 @@ def api_change_password(
     db.commit()
 
     # Reissue session cookie with new token_version so caller stays logged in
-    new_token = create_session_token(user.id, token_version=getattr(user, "token_version", 0))
+    new_token = create_session_token(user.id, token_version=user.token_version)
     set_session_cookie(response, new_token)
 
     security_logger.info("Password changed successfully for user '%s' (id=%d)", user.username, user.id)

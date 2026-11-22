@@ -10,7 +10,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
-from app.config import OFFLINE_AFTER_S
 from app.database import get_db
 from app.models.gateway import Gateway
 from app.models.node import Node
@@ -145,7 +144,7 @@ def api_unplaced(
     latest_map = get_latest_readings(db, node_ids)
 
     serialized = [
-        serialize_node(n, latest_map.get(n.id), now_ts, offline_after_s=OFFLINE_AFTER_S)
+        serialize_node(n, latest_map.get(n.id), now_ts)
         for n in unplaced_nodes
     ]
     return {"unplaced": serialized}
@@ -200,7 +199,7 @@ def api_place_node(
 
     security_logger.info("User '%s' placed node %d in tunnel %d", user.username, node.id, tunnel.id)
     latest_map = get_latest_readings(db, [node.id])
-    return serialize_node(node, latest_map.get(node.id), time.time(), offline_after_s=OFFLINE_AFTER_S)
+    return serialize_node(node, latest_map.get(node.id), time.time())
 
 
 @router.delete("/api/nodes/{node_id}/placement")
@@ -239,4 +238,4 @@ def api_unplace_node(
 
     security_logger.info("User '%s' unplaced node %d", user.username, node.id)
     latest_map = get_latest_readings(db, [node.id])
-    return serialize_node(node, latest_map.get(node.id), time.time(), offline_after_s=OFFLINE_AFTER_S)
+    return serialize_node(node, latest_map.get(node.id), time.time())

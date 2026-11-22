@@ -38,20 +38,20 @@ def _serialize_alert(alert: Alert) -> dict:
 
 @router.get("/api/alerts")
 def api_get_alerts(
-    status: str = Query("open", pattern="^(open|all)$"),
+    status_filter: str = Query("open", alias="status", pattern="^(open|all)$"),
     mine_id: Optional[int] = None,
     user: User = Depends(require_role(*SUPERIOR_ROLES)),
     db: Session = Depends(get_db),
 ):
     """Returns connectivity and hazard alerts scoped to permitted mines (superiors only)."""
-    if user.role == "admin":
-        allowed_mines = [m[0] for m in db.query(Mine.id).all()]
-    else:
-        allowed_mines = get_allowed_mine_ids(db, user)
+    allowed_mines = get_allowed_mine_ids(db, user)
 
     if mine_id is not None:
         if mine_id not in allowed_mines:
-            return {"alerts": []}
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Mine not found",
+            )
         target_mines = [mine_id]
     else:
         target_mines = allowed_mines
@@ -65,7 +65,7 @@ def api_get_alerts(
         .filter(Alert.mine_id.in_(target_mines))
     )
 
-    if status == "open":
+    if status_filter == "open":
         query = query.filter(Alert.resolved_at.is_(None))
 
     alerts_list = (
@@ -84,10 +84,7 @@ def api_acknowledge_alert(
     db: Session = Depends(get_db),
 ):
     """Acknowledges an alert idempotently within the caller's permitted mines."""
-    if user.role == "admin":
-        allowed_mines = None
-    else:
-        allowed_mines = set(get_allowed_mine_ids(db, user))
+    allowed_mines = set(get_allowed_mine_ids(db, user))
 
     alert = (
         db.query(Alert)
@@ -103,7 +100,7 @@ def api_acknowledge_alert(
         )
 
     # Don't leak existence across mines or companies
-    if allowed_mines is not None and alert.mine_id not in allowed_mines:
+    if alert.mine_id not in allowed_mines:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Alert not found",

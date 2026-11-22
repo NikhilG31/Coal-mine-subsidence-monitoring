@@ -65,7 +65,7 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     # Session invalidation (A3): reject if token tv != user's token_version
     # Tokens issued without tv claim are treated as tv=0
     token_tv = int(payload.get("tv", 0))
-    user_tv = int(getattr(user, "token_version", 0))
+    user_tv = int(user.token_version)
     if token_tv != user_tv:
         raise HTTPException(
             status_code=401,
