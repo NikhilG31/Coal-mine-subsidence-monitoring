@@ -34,6 +34,7 @@ class User(Base):
     mine_associations = relationship("UserMine", back_populates="user", cascade="all, delete-orphan")
     worker_profile = relationship("WorkerProfile", uselist=False, back_populates="user", cascade="all, delete-orphan")
     assignments = relationship("Assignment", back_populates="user", foreign_keys="Assignment.user_id", cascade="all, delete-orphan")
+    qr_tokens = relationship("QRToken", back_populates="user", foreign_keys="QRToken.user_id", cascade="all, delete-orphan")
 
 
 class UserMine(Base):

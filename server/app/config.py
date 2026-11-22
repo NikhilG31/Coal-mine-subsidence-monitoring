@@ -100,6 +100,22 @@ except Exception as e:
     raise ValueError(f"HOURS_TIMEZONE '{HOURS_TIMEZONE}' is not a valid IANA timezone: {e}")
 
 
+# Step 6: Badge, Check-in, Headcount, and Check Flags Configuration
+CHECKOUT_GRACE_MIN: int = int(os.getenv("CHECKOUT_GRACE_MIN", "15"))
+CHECKIN_EARLY_MIN: int = int(os.getenv("CHECKIN_EARLY_MIN", "120"))
+CHECK_FLAG_OVERDUE_HOURS: int = int(os.getenv("CHECK_FLAG_OVERDUE_HOURS", "8"))
+SCAN_RATE_PER_MIN: int = int(os.getenv("SCAN_RATE_PER_MIN", "60"))
+
+if CHECKOUT_GRACE_MIN < 0:
+    raise ValueError("CHECKOUT_GRACE_MIN must be non-negative")
+if CHECKIN_EARLY_MIN < 0:
+    raise ValueError("CHECKIN_EARLY_MIN must be non-negative")
+if CHECK_FLAG_OVERDUE_HOURS <= 0:
+    raise ValueError("CHECK_FLAG_OVERDUE_HOURS must be positive")
+if SCAN_RATE_PER_MIN <= 0:
+    raise ValueError("SCAN_RATE_PER_MIN must be positive")
+
+
 def validate_jwt_secret() -> None:
     """Enforces that JWT_SECRET is configured, >= 32 chars, >= 12 distinct chars, and no CHANGE_ME."""
     if not JWT_SECRET or len(JWT_SECRET) < 32:

@@ -41,6 +41,8 @@
 
         <button id="btnOpenAuth" class="neo-btn btn-small" style="display:none;" onclick="openAuthModal()">Sign In / Sign Up</button>
         <button id="btnWorkers" class="neo-btn btn-small" style="display:none;" onclick="openWorkersModal()">👷 Workers &amp; Shifts</button>
+        <button id="btnGateScanner" class="neo-btn btn-small" style="display:none;" onclick="openGateScannerModal()">📷 Gate Scanner</button>
+        <button id="btnHeadcount" class="neo-btn btn-small" style="display:none;" onclick="openHeadcountModal()">👥 Headcount &amp; Flags</button>
         <button id="btnMyHours" class="neo-btn btn-small" style="display:none;" onclick="openMyHoursModal()">⏱️ My Hours</button>
         <button id="btnManageMines" class="neo-btn btn-small" onclick="openMinesModal()">⛏️ Mines &amp; Gateways</button>
         <button id="btnAddUser" class="neo-btn btn-small" onclick="openAddUserModal()">+ Add User</button>
@@ -818,5 +820,132 @@
 
   <!-- Application Logic -->
   <script src="/static/app.js"></script>
+  <script src="/static/checkin.js"></script>
+  <script src="/static/headcount_flags.js"></script>
+
+  <!-- Modal: Worker QR Badge (Printable) -->
+  <div id="badgeModal" class="modal-overlay">
+    <div class="modal-window" style="max-width:440px; width:95%; text-align:center;">
+      <div class="modal-header no-print">
+        <h3>🛡️ WORKER SECURITY BADGE</h3>
+        <button class="neo-btn btn-small" onclick="closeBadgeModal()">✖</button>
+      </div>
+      <div class="modal-body" style="padding:20px;">
+        <div id="badgeWorkerInfo" style="margin-bottom:12px;"></div>
+        <div id="badgeSvgContainer" style="margin:0 auto 14px auto; max-width:240px; border:2px solid var(--ink); padding:8px; background:#fff;"></div>
+        <div class="zine-box no-print" style="background:#fff3cd; color:#856404; font-size:12px; font-weight:700; margin-bottom:14px; padding:8px;">
+          ⚠️ This badge is shown only once. Please print or capture it now.
+        </div>
+        <div class="no-print" style="display:flex; gap:10px; justify-content:center;">
+          <button type="button" class="neo-btn btn-primary" onclick="printBadge()">🖨️ Print Badge</button>
+          <button type="button" class="neo-btn" onclick="closeBadgeModal()">Done</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Gate Scanner -->
+  <div id="gateScannerModal" class="modal-overlay">
+    <div class="modal-window" style="max-width:680px; width:95%;">
+      <div class="modal-header">
+        <h3>📷 TUNNEL GATE SCANNER</h3>
+        <button class="neo-btn btn-small" onclick="closeGateScannerModal()">✖</button>
+      </div>
+      <div class="modal-body">
+        <div class="zine-box" style="margin-bottom:12px; padding:10px;">
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+            <div style="display:flex; gap:4px;">
+              <button id="btnScanIn" type="button" class="neo-btn btn-small btn-success active-dir" onclick="setScanDirection('in')">⬇️ CHECK IN</button>
+              <button id="btnScanOut" type="button" class="neo-btn btn-small" onclick="setScanDirection('out')">⬆️ CHECK OUT</button>
+            </div>
+            <div style="flex:1; min-width:180px;">
+              <select id="scannerTunnelSelect" class="form-select" style="width:100%;"></select>
+            </div>
+          </div>
+          <form onsubmit="handleScanSubmit(event)" style="display:flex; gap:8px;">
+            <input type="text" id="scanTokenInput" class="form-input" placeholder="Scan QR badge token or type cmb_..." autocomplete="off" style="flex:1;">
+            <button type="submit" class="neo-btn btn-primary">Submit Scan</button>
+          </form>
+        </div>
+
+        <div id="scanResultAlert" class="zine-box" style="display:none; padding:10px; margin-bottom:12px; font-size:13px;"></div>
+
+        <div class="zine-box" style="padding:10px;">
+          <h4 style="font-family:var(--condensed); margin:0 0 8px 0;">RECENT SCANS (LAST 20)</h4>
+          <div style="max-height:220px; overflow-y:auto;">
+            <table class="data-table" style="width:100%; font-size:12px;">
+              <thead>
+                <tr>
+                  <th>Worker</th>
+                  <th>Dir</th>
+                  <th>Tunnel</th>
+                  <th>Time</th>
+                  <th>Scanner</th>
+                </tr>
+              </thead>
+              <tbody id="recentScansList"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Live Headcount & Check Flags -->
+  <div id="headcountModal" class="modal-overlay">
+    <div class="modal-window" style="max-width:800px; width:95%;">
+      <div class="modal-header">
+        <h3>👥 LIVE HEADCOUNT &amp; CHECK FLAGS</h3>
+        <button class="neo-btn btn-small" onclick="closeHeadcountModal()">✖</button>
+      </div>
+      <div class="modal-body" style="max-height:80vh; overflow-y:auto;">
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px;">
+          <div class="zine-box" style="padding:10px;">
+            <h4 style="font-family:var(--condensed); margin:0 0 8px 0;">TUNNEL HEADCOUNT (POLLED 10S)</h4>
+            <div id="headcountTunnelsContainer">Loading headcount...</div>
+          </div>
+
+          <div class="zine-box" style="padding:10px;">
+            <h4 style="font-family:var(--condensed); margin:0 0 8px 0;">SHIFT CHECK-OUT FLAGS</h4>
+            <div id="checkFlagsListContainer">Loading check flags...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Clear Flag with Note -->
+  <div id="clearFlagModal" class="modal-overlay">
+    <div class="modal-window" style="max-width:480px; width:95%;">
+      <div class="modal-header">
+        <h3>CLEAR CHECK-OUT FLAG</h3>
+        <button class="neo-btn btn-small" onclick="closeClearFlagModal()">✖</button>
+      </div>
+      <div class="modal-body" style="padding:14px;">
+        <div style="font-size:12px; margin-bottom:10px;">
+          Worker: <strong id="clearFlagWorkerName"></strong>
+        </div>
+        <form onsubmit="handleClearFlagSubmit(event)">
+          <div class="form-group" style="margin-bottom:10px;">
+            <label style="font-size:11px;">Resolution Note (Required, 3-500 chars):</label>
+            <textarea id="clearFlagNote" class="form-input" rows="3" required minlength="3" maxlength="500" placeholder="e.g. Confirmed worker exited at gate 2 without scanning badge"></textarea>
+          </div>
+          <div style="display:flex; gap:8px; justify-content:flex-end;">
+            <button type="button" class="neo-btn" onclick="closeClearFlagModal()">Cancel</button>
+            <button type="submit" class="neo-btn btn-primary">Confirm Clearance</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <style>
+    @media print {
+      body * { visibility: hidden !important; }
+      #badgeModal, #badgeModal * { visibility: visible !important; }
+      #badgeModal { position: absolute; left: 0; top: 0; width: 100%; height: 100%; background: #fff; }
+      .no-print { display: none !important; }
+    }
+  </style>
 </body>
 </html>

@@ -109,6 +109,8 @@ class WorkerSummaryView(BaseModel):
     role: str
     active: bool
     employee_no: Optional[str] = None
+    has_badge: bool = False
+    badge_issued_at: Optional[str] = None
     current_tunnel: Optional[CurrentTunnelView] = None
 
 
@@ -135,6 +137,8 @@ class WorkerDetailResponse(BaseModel):
     role: str
     active: bool
     employee_no: Optional[str] = None
+    has_badge: bool = False
+    badge_issued_at: Optional[str] = None
     phone: Optional[str] = None
     emergency_contact_name: Optional[str] = None
     emergency_contact_phone: Optional[str] = None

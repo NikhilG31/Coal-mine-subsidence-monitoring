@@ -1,25 +1,21 @@
 """Shift and worker assignment domain service.
 
-Owns assignment creation, schedule shortening, shift deletion, and weekly hours arithmetic.
+Owns assignment creation, schedule shortening, shift deletion, and shift conflict validation.
 Must NOT handle HTTP requests, import FastAPI components, or manipulate UI views.
 """
 import datetime
 from typing import Any, Dict, List, Optional, Tuple
-from zoneinfo import ZoneInfo
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
-from app.config import (
-    HOURS_TIMEZONE,
-    MAX_SHIFT_HOURS,
-    WEEKLY_HOURS_LIMIT,
-)
+from app.config import MAX_SHIFT_HOURS
 from app.models.assignment import Assignment
 from app.models.tunnel import Tunnel
 from app.models.user import User, UserMine
 from app.security.dependencies import get_allowed_mine_ids
 from app.security.roles import ROLE_FOREMAN, ROLE_MINER
 from app.services.audit import record_audit
+from app.services.weekly_hours import weekly_hours_warnings
 
 
 class ShiftError(Exception):
@@ -44,74 +40,30 @@ class ShiftOverlapError(ShiftError):
         self.clashing_shift = clashing_shift
 
 
-def weekly_hours_warnings(
-    db: Session,
-    user_id: int,
-    starts_at: datetime.datetime,
-    ends_at: datetime.datetime,
-    ignore_assignment_id: Optional[int] = None,
-) -> List[Dict[str, Any]]:
-    """Calculates weekly shift hours and returns warning objects if limit exceeded.
+def _format_clashing_shift(
+    clash: Assignment,
+    allowed_mine_ids: List[int],
+) -> Dict[str, Any]:
+    """Formats clashing shift payload, redacting tunnel metadata if outside allowed mines."""
+    clash_mine_id = clash.tunnel.mine_id if clash.tunnel else None
+    starts_iso = clash.starts_at.astimezone(datetime.timezone.utc).isoformat()
+    ends_iso = clash.ends_at.astimezone(datetime.timezone.utc).isoformat()
 
-    Week window: Monday 00:00 to next Monday 00:00 in settings.HOURS_TIMEZONE.
-    Any shift crossing a week boundary is split so only the within-week portion is counted.
-    """
-    tz = ZoneInfo(HOURS_TIMEZONE)
-    s_local = starts_at.astimezone(tz)
-    e_local = ends_at.astimezone(tz)
+    if clash_mine_id is None or clash_mine_id not in allowed_mine_ids:
+        # Redact tunnel info for mines outside caller's scope
+        return {
+            "starts_at": starts_iso,
+            "ends_at": ends_iso,
+        }
 
-    # First Monday 00:00 at or before starts_at
-    w_start = s_local.replace(hour=0, minute=0, second=0, microsecond=0) - datetime.timedelta(
-        days=s_local.weekday()
-    )
-
-    warnings = []
-    limit = float(WEEKLY_HOURS_LIMIT)
-
-    while w_start < e_local:
-        w_end = w_start + datetime.timedelta(days=7)
-        w_start_utc = w_start.astimezone(datetime.timezone.utc)
-        w_end_utc = w_end.astimezone(datetime.timezone.utc)
-
-        # Existing DB assignments overlapping this week
-        query = db.query(Assignment).filter(
-            Assignment.user_id == user_id,
-            Assignment.starts_at < w_end_utc,
-            Assignment.ends_at > w_start_utc,
-        )
-        if ignore_assignment_id:
-            query = query.filter(Assignment.id != ignore_assignment_id)
-        db_shifts = query.all()
-
-        total_seconds = 0.0
-
-        # Sum existing assignments
-        for s in db_shifts:
-            c_start = max(s.starts_at, w_start_utc)
-            c_end = min(s.ends_at, w_end_utc)
-            if c_end > c_start:
-                total_seconds += (c_end - c_start).total_seconds()
-
-        # Add the evaluated shift
-        c_start = max(starts_at, w_start_utc)
-        c_end = min(ends_at, w_end_utc)
-        if c_end > c_start:
-            total_seconds += (c_end - c_start).total_seconds()
-
-        total_hours = round(total_seconds / 3600.0, 1)
-        if total_hours > limit:
-            warnings.append(
-                {
-                    "code": "weekly_hours_exceeded",
-                    "week_start": w_start.isoformat(),
-                    "total_hours": total_hours,
-                    "limit_hours": limit,
-                }
-            )
-
-        w_start = w_end
-
-    return warnings
+    t_name = clash.tunnel.name if clash.tunnel else f"Tunnel {clash.tunnel_id}"
+    return {
+        "id": clash.id,
+        "tunnel_id": clash.tunnel_id,
+        "tunnel_name": t_name,
+        "starts_at": starts_iso,
+        "ends_at": ends_iso,
+    }
 
 
 def create_shift(
@@ -168,6 +120,7 @@ def create_shift(
     # 4. Overlap pre-check query
     clashing = (
         db.query(Assignment)
+        .options(joinedload(Assignment.tunnel))
         .filter(
             Assignment.user_id == user_id,
             Assignment.starts_at < ends_at,
@@ -176,18 +129,11 @@ def create_shift(
         .first()
     )
     if clashing:
-        t_name = clashing.tunnel.name if clashing.tunnel else f"Tunnel {clashing.tunnel_id}"
         raise ShiftOverlapError(
-            clashing_shift={
-                "id": clashing.id,
-                "tunnel_id": clashing.tunnel_id,
-                "tunnel_name": t_name,
-                "starts_at": clashing.starts_at.astimezone(datetime.timezone.utc).isoformat(),
-                "ends_at": clashing.ends_at.astimezone(datetime.timezone.utc).isoformat(),
-            }
+            clashing_shift=_format_clashing_shift(clashing, allowed_mine_ids)
         )
 
-    # 5. Insert with exclusion constraint catch
+    # 5. Insert with exclusion constraint catch using a SAVEPOINT
     assignment = Assignment(
         user_id=user_id,
         tunnel_id=tunnel_id,
@@ -195,15 +141,20 @@ def create_shift(
         ends_at=ends_at,
         created_by=actor.id,
     )
-    db.add(assignment)
 
     try:
-        db.flush()
+        with db.begin_nested():
+            db.add(assignment)
+            db.flush()
     except IntegrityError as exc:
-        db.rollback()
+        sqlstate = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+        if sqlstate != "23P01":
+            raise ShiftError("Database integrity violation", status_code=400) from exc
+
         # Find the clashing shift from the concurrent insert
         clash = (
             db.query(Assignment)
+            .options(joinedload(Assignment.tunnel))
             .filter(
                 Assignment.user_id == user_id,
                 Assignment.starts_at < ends_at,
@@ -211,23 +162,11 @@ def create_shift(
             )
             .first()
         )
-        t_name = clash.tunnel.name if clash and clash.tunnel else f"Tunnel {tunnel_id}"
+        if not clash:
+            raise ShiftError("Database integrity violation", status_code=400) from exc
+
         raise ShiftOverlapError(
-            clashing_shift={
-                "id": clash.id if clash else 0,
-                "tunnel_id": clash.tunnel_id if clash else tunnel_id,
-                "tunnel_name": t_name,
-                "starts_at": (
-                    clash.starts_at.astimezone(datetime.timezone.utc).isoformat()
-                    if clash
-                    else starts_at.isoformat()
-                ),
-                "ends_at": (
-                    clash.ends_at.astimezone(datetime.timezone.utc).isoformat()
-                    if clash
-                    else ends_at.isoformat()
-                ),
-            }
+            clashing_shift=_format_clashing_shift(clash, allowed_mine_ids)
         ) from exc
 
     # 6. Audit record in same transaction

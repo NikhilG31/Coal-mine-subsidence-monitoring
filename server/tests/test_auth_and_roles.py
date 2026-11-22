@@ -75,10 +75,9 @@ POLICY_TABLE = {
     ("GET", "/api/workers"): "superiors_scoped",
     ("GET", "/api/workers/{worker_id}"): "superiors_scoped",
     ("GET", "/api/assignments"): "superiors_scoped",
-    # MANAGER OR SAFETY OFFICER
-    ("POST", "/api/assignments"): "manager_or_safety_officer",
-    ("PATCH", "/api/assignments/{assignment_id}"): "manager_or_safety_officer",
-    ("DELETE", "/api/assignments/{assignment_id}"): "manager_or_safety_officer",
+    ("POST", "/api/assignments"): "superiors_scoped",
+    ("PATCH", "/api/assignments/{assignment_id}"): "superiors_scoped",
+    ("DELETE", "/api/assignments/{assignment_id}"): "superiors_scoped",
     # MANAGER ONLY
     ("POST", "/api/mines"): "manager_only",
     ("POST", "/api/mines/{mine_id}/tunnels"): "manager_only",
@@ -92,6 +91,15 @@ POLICY_TABLE = {
     ("PATCH", "/api/users/{user_id}"): "manager_only",
     ("DELETE", "/api/users/{user_id}"): "manager_only",
     ("PUT", "/api/workers/{worker_id}/profile"): "manager_only",
+    ("POST", "/api/workers/{worker_id}/badge"): "manager_only",
+    ("DELETE", "/api/workers/{worker_id}/badge"): "manager_or_foreman",
+    # SCANNERS (Manager, Safety Officer, Engineer, Foreman; Miners get 403)
+    ("POST", "/api/checkins"): "scanners",
+    ("POST", "/api/checkins/manual"): "scanners",
+    ("GET", "/api/checkins"): "scanners",
+    ("GET", "/api/headcount"): "scanners",
+    ("GET", "/api/check-flags"): "scanners",
+    ("PATCH", "/api/check-flags/{flag_id}"): "scanners",
     ("POST", "/api/demo/seed"): "manager_only",
     ("POST", "/api/demo/step"): "manager_only",
     ("POST", "/api/demo/toggle-live"): "manager_only",
@@ -160,6 +168,8 @@ ROLE_PERMISSIONS = {
     "any_authenticated": {ROLE_MANAGER, ROLE_SAFETY_OFFICER, ROLE_ENGINEER, ROLE_FOREMAN, ROLE_MINER},
     "any_role_scoped": {ROLE_MANAGER, ROLE_SAFETY_OFFICER, ROLE_ENGINEER, ROLE_FOREMAN, ROLE_MINER},
     "superiors_scoped": {ROLE_MANAGER, ROLE_SAFETY_OFFICER, ROLE_ENGINEER},
+    "scanners": {ROLE_MANAGER, ROLE_SAFETY_OFFICER, ROLE_ENGINEER, ROLE_FOREMAN},
+    "manager_or_foreman": {ROLE_MANAGER, ROLE_FOREMAN},
     "manager_or_safety_officer": {ROLE_MANAGER, ROLE_SAFETY_OFFICER},
     "manager_only": {ROLE_MANAGER},
 }

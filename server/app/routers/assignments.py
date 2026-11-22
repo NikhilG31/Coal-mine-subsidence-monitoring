@@ -7,7 +7,7 @@ import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
 from app.models.assignment import Assignment
@@ -16,19 +16,16 @@ from app.models.user import User, UserMine
 from app.schemas.workers import (
     AssignmentsListResponse,
     CreateAssignmentRequest,
-    CreateAssignmentResponse,
     UpdateAssignmentRequest,
     _validate_tz_aware,
 )
 from app.security.dependencies import (
     get_allowed_mine_ids,
-    get_current_user,
     require_role,
     security_logger,
 )
 from app.security.roles import (
     ROLE_MANAGER,
-    ROLE_SAFETY_OFFICER,
     SUPERIOR_ROLES,
 )
 from app.services.shift_service import (
@@ -41,7 +38,7 @@ from app.services.shift_service import (
 
 router = APIRouter(tags=["assignments"])
 
-SCHEDULER_ROLES = (ROLE_MANAGER, ROLE_SAFETY_OFFICER)
+SCHEDULER_ROLES = SUPERIOR_ROLES
 
 
 def _serialize_assignment(a: Assignment) -> dict:
@@ -72,7 +69,7 @@ def api_create_assignment(
     user: User = Depends(require_role(*SCHEDULER_ROLES)),
     db: Session = Depends(get_db),
 ):
-    """Schedules a worker to an underground tunnel shift (Manager or Safety Officer)."""
+    """Schedules a worker to an underground tunnel shift (Superiors: Manager, Safety Officer, Engineer)."""
     try:
         assignment, warnings = create_shift(
             db,
@@ -117,7 +114,7 @@ def api_update_assignment(
     user: User = Depends(require_role(*SCHEDULER_ROLES)),
     db: Session = Depends(get_db),
 ):
-    """Shortens an active or upcoming shift end time (Manager or Safety Officer)."""
+    """Shortens an active or upcoming shift end time (Superiors: Manager, Safety Officer, Engineer)."""
     allowed_mines = get_allowed_mine_ids(db, user)
     assignment = (
         db.query(Assignment)
@@ -153,7 +150,7 @@ def api_delete_assignment(
     user: User = Depends(require_role(*SCHEDULER_ROLES)),
     db: Session = Depends(get_db),
 ):
-    """Deletes an unstarted future shift (Manager or Safety Officer)."""
+    """Deletes an unstarted future shift (Superiors: Manager, Safety Officer, Engineer)."""
     allowed_mines = get_allowed_mine_ids(db, user)
     assignment = (
         db.query(Assignment)
@@ -189,10 +186,12 @@ def api_list_assignments(
     tunnel_id: Optional[int] = None,
     from_time: Optional[str] = Query(None, alias="from"),
     to_time: Optional[str] = Query(None, alias="to"),
+    limit: int = Query(500, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
     user: User = Depends(require_role(*SUPERIOR_ROLES)),
     db: Session = Depends(get_db),
 ):
-    """Queries shift assignments within caller's authorized mines and time filters."""
+    """Queries shift assignments within caller's authorized mines, with default window and eager loading."""
     allowed_mines = get_allowed_mine_ids(db, user)
 
     if mine_id is not None:
@@ -209,6 +208,10 @@ def api_list_assignments(
 
     query = (
         db.query(Assignment)
+        .options(
+            joinedload(Assignment.user).joinedload(User.worker_profile),
+            joinedload(Assignment.tunnel).joinedload(Tunnel.mine),
+        )
         .join(Tunnel, Tunnel.id == Assignment.tunnel_id)
         .filter(Tunnel.mine_id.in_(scoped_mines))
     )
@@ -234,19 +237,26 @@ def api_list_assignments(
                 raise HTTPException(status_code=404, detail="Worker not found")
         query = query.filter(Assignment.user_id == user_id)
 
-    if from_time:
-        try:
-            from_dt = _validate_tz_aware(from_time)
-            query = query.filter(Assignment.ends_at > from_dt)
-        except ValueError as err:
-            raise HTTPException(status_code=422, detail=f"Invalid 'from' parameter: {err}")
+    if from_time is None and to_time is None:
+        # Default window: now - 7 days to now + 30 days
+        now = datetime.datetime.now(datetime.timezone.utc)
+        from_dt = now - datetime.timedelta(days=7)
+        to_dt = now + datetime.timedelta(days=30)
+        query = query.filter(Assignment.ends_at > from_dt, Assignment.starts_at < to_dt)
+    else:
+        if from_time:
+            try:
+                from_dt = _validate_tz_aware(from_time)
+                query = query.filter(Assignment.ends_at > from_dt)
+            except ValueError as err:
+                raise HTTPException(status_code=422, detail=f"Invalid 'from' parameter: {err}")
 
-    if to_time:
-        try:
-            to_dt = _validate_tz_aware(to_time)
-            query = query.filter(Assignment.starts_at < to_dt)
-        except ValueError as err:
-            raise HTTPException(status_code=422, detail=f"Invalid 'to' parameter: {err}")
+        if to_time:
+            try:
+                to_dt = _validate_tz_aware(to_time)
+                query = query.filter(Assignment.starts_at < to_dt)
+            except ValueError as err:
+                raise HTTPException(status_code=422, detail=f"Invalid 'to' parameter: {err}")
 
-    assignments = query.order_by(Assignment.starts_at.asc()).all()
+    assignments = query.order_by(Assignment.starts_at.asc()).offset(offset).limit(limit).all()
     return {"assignments": [_serialize_assignment(a) for a in assignments]}

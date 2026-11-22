@@ -30,6 +30,8 @@ from app.routers import (
     alerts,
     assignments,
     auth,
+    check_flags,
+    checkins,
     demo,
     export,
     gateways,
@@ -101,6 +103,8 @@ app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(workers.router)
 app.include_router(assignments.router)
+app.include_router(checkins.router)
+app.include_router(check_flags.router)
 app.include_router(me.router)
 
 

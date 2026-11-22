@@ -38,8 +38,9 @@ if not db_name.endswith("_test"):
         returncode=1,
     )
 
-# Point DATABASE_URL to TEST_DATABASE_URL BEFORE importing app
+# Point DATABASE_URL to TEST_DATABASE_URL and disable background watchdog thread BEFORE importing app
 os.environ["DATABASE_URL"] = TEST_DB_URL
+os.environ["WATCHDOG_ENABLED"] = "false"
 
 from alembic import command
 from alembic.config import Config
@@ -64,15 +65,19 @@ def apply_migrations():
 @pytest.fixture(autouse=True)
 def clean_database():
     """Truncates all tables between test cases for absolute isolation."""
-    yield
-    with engine.connect() as conn:
-        conn.execute(
-            text(
-                "TRUNCATE TABLE assignments, worker_profiles, alerts, audit_log, readings, nodes, gateways, "
-                "user_mines, users, tunnels, mines, companies RESTART IDENTITY CASCADE;"
+    def _truncate():
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "TRUNCATE TABLE check_flags, check_events, qr_tokens, assignments, worker_profiles, alerts, audit_log, readings, nodes, gateways, "
+                    "user_mines, users, tunnels, mines, companies RESTART IDENTITY CASCADE;"
+                )
             )
-        )
-        conn.commit()
+            conn.commit()
+
+    _truncate()
+    yield
+    _truncate()
 
 
 @pytest.fixture

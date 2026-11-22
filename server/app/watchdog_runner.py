@@ -1,13 +1,13 @@
-"""Background watchdog runner daemon for gateway and node offline detection.
+"""Background runner daemon for connectivity watchdog and shift check flags.
 
-Owns background thread execution, startup grace period delays, and advisory transaction lock coordination.
+Owns periodic background cycle dispatch, grace period delay, and advisory transaction lock coordination.
 Must NOT handle HTTP requests, modify database schemas, or send external notifications.
 """
 import datetime
 import logging
 import threading
 import time
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from sqlalchemy import text
 
@@ -17,25 +17,29 @@ from app.config import (
     WATCHDOG_INTERVAL_S,
 )
 from app.database import SessionLocal
+from app.services.flag_service import run_flag_cycle
 from app.services.watchdog_service import run_watchdog_cycle
 
 logger = logging.getLogger(__name__)
 
 WATCHDOG_LOCK_KEY = 8392104
+FLAG_LOCK_KEY = 8392105
 
 
 class WatchdogRunner:
-    """Manages the periodic execution of the connectivity watchdog."""
+    """Manages the periodic execution of connectivity watchdog and shift check flags."""
 
     def __init__(
         self,
         interval_s: int = WATCHDOG_INTERVAL_S,
         grace_period_s: int = NODE_OFFLINE_AFTER_S,
         lock_key: int = WATCHDOG_LOCK_KEY,
+        flag_lock_key: int = FLAG_LOCK_KEY,
     ):
         self.interval_s = interval_s
         self.grace_period_s = grace_period_s
         self.lock_key = lock_key
+        self.flag_lock_key = flag_lock_key
         self.stop_event = threading.Event()
         self.thread: Optional[threading.Thread] = None
         self.started_at: Optional[float] = None
@@ -46,11 +50,8 @@ class WatchdogRunner:
             return False
         return (time.monotonic() - self.started_at) < self.grace_period_s
 
-    def run_once(self, now: Optional[datetime.datetime] = None) -> Optional[Dict[str, int]]:
-        """Executes a single watchdog cycle under the PostgreSQL advisory transaction lock.
-
-        Skips execution if within the startup grace period or if the advisory lock cannot be acquired.
-        """
+    def run_watchdog_once(self, now: Optional[datetime.datetime] = None) -> Optional[Dict[str, int]]:
+        """Executes a single watchdog cycle under the PostgreSQL advisory transaction lock."""
         if self.in_grace_period():
             elapsed = time.monotonic() - (self.started_at or 0.0)
             logger.debug(
@@ -82,6 +83,54 @@ class WatchdogRunner:
             return None
         finally:
             db.close()
+
+    def run_flag_once(self, now: Optional[datetime.datetime] = None) -> Optional[Dict[str, int]]:
+        """Executes a single shift check-flags cycle under its own advisory transaction lock."""
+        db = SessionLocal()
+        try:
+            if db.bind and db.bind.dialect.name == "postgresql":
+                locked = db.execute(
+                    text("SELECT pg_try_advisory_xact_lock(:key)"),
+                    {"key": self.flag_lock_key},
+                ).scalar()
+                if not locked:
+                    db.rollback()
+                    logger.debug("Flag cycle advisory lock not acquired, skipping cycle")
+                    return None
+
+            cycle_now = now or datetime.datetime.now(datetime.timezone.utc)
+            result = run_flag_cycle(db, cycle_now)
+            logger.debug("Flag cycle completed: %s", result)
+            return result
+        except Exception as exc:
+            db.rollback()
+            logger.exception("Flag cycle error: %s", exc)
+            return None
+        finally:
+            db.close()
+
+    def run_once(self, now: Optional[datetime.datetime] = None) -> Optional[Dict[str, Any]]:
+        """Executes both watchdog and flag cycles independently. One failure does not stop the other."""
+        if self.in_grace_period():
+            return None
+
+        watchdog_result = None
+        flag_result = None
+
+        try:
+            watchdog_result = self.run_watchdog_once(now)
+        except Exception as exc:
+            logger.exception("Unexpected error in watchdog execution: %s", exc)
+
+        try:
+            flag_result = self.run_flag_once(now)
+        except Exception as exc:
+            logger.exception("Unexpected error in flag cycle execution: %s", exc)
+
+        return {
+            "watchdog": watchdog_result,
+            "flags": flag_result,
+        }
 
     def _loop(self) -> None:
         """Loop running until stop_event is set."""

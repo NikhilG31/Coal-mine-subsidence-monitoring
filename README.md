@@ -69,10 +69,13 @@ coal-mine-subsidence-monitoring/
     │   │   ├── alert.py                          # Alert model with offline states and partial unique constraints
     │   │   ├── assignment.py                     # Underground tunnel shift assignment with GIST exclusion constraint
     │   │   ├── audit_log.py                      # Immutable audit log model
+    │   │   ├── check_event.py                    # Check-in and check-out event database entity model
+    │   │   ├── check_flag.py                     # Shift check-out exception flag database entity model
     │   │   ├── company.py                        # Company table and normalized name helper
     │   │   ├── gateway.py                        # Hardware gateway table
     │   │   ├── mine.py                           # Coal mine sites table
     │   │   ├── node.py                           # Sensor nodes table (1..255 range constraint)
+    │   │   ├── qr_token.py                       # QR badge token entity with partial unique active index
     │   │   ├── reading.py                        # Telemetry readings table with partial unique index
     │   │   ├── tunnel.py                         # Underground mine tunnels table
     │   │   ├── user.py                           # Users and UserMine association tables
@@ -81,6 +84,8 @@ coal-mine-subsidence-monitoring/
     │   │   ├── alerts.py                         # GET /api/alerts, POST /api/alerts/{id}/ack
     │   │   ├── assignments.py                    # POST/PATCH/DELETE /api/assignments, GET /api/assignments
     │   │   ├── auth.py                           # POST /api/auth/login, GET /api/auth/me, POST /api/auth/logout, POST /api/auth/change-password
+    │   │   ├── check_flags.py                    # GET /api/check-flags, PATCH /api/check-flags/{id}
+    │   │   ├── checkins.py                       # POST /api/checkins, POST /api/checkins/manual, GET /api/checkins, GET /api/headcount
     │   │   ├── demo.py                           # /api/demo/* simulation and testing routes
     │   │   ├── export.py                         # GET /api/export.xlsx workbook export
     │   │   ├── gateways.py                       # GET/PATCH/DELETE /api/gateways, POST /api/gateways/{id}/rotate-key
@@ -93,9 +98,10 @@ coal-mine-subsidence-monitoring/
     │   │   ├── notifications.py                  # GET / POST /api/notifications/config
     │   │   ├── placements.py                     # GET /api/placements, GET /api/unplaced, PATCH/DELETE /api/nodes/{id}/placement
     │   │   ├── users.py                          # GET/POST /api/users, PATCH/DELETE /api/users/{id}
-    │   │   └── workers.py                        # GET /api/workers, GET /api/workers/{id}, PUT /api/workers/{id}/profile
+    │   │   └── workers.py                        # GET /api/workers, GET /api/workers/{id}, PUT /api/workers/{id}/profile, POST/DELETE /api/workers/{id}/badge
     │   ├── schemas/                              # Pydantic serialization schemas and view models
     │   │   ├── __init__.py                       # Package exports
+    │   │   ├── checkins.py                       # Badge, scan, headcount, and check flag schemas
     │   │   ├── mines.py                          # Mine, tunnel, and gateway creation request schemas
     │   │   ├── nodes.py                          # WorkerNodeView (strict leakage prevention) & SuperiorNodeView
     │   │   ├── placements.py                     # PlacementsResponse, WorkerPlacementView, SuperiorPlacementView
@@ -105,25 +111,33 @@ coal-mine-subsidence-monitoring/
     │   │   ├── dependencies.py                   # FastAPI dependencies (auth, role checks, mine scoping)
     │   │   ├── password_policy.py                # Centralized password complexity rules
     │   │   ├── passwords.py                      # PBKDF2-HMAC-SHA256 (600k iter) & legacy hash verification
-    │   │   ├── rate_limit.py                     # Sliding-window IP+username login brute-force limiter
+    │   │   ├── rate_limit.py                     # Sliding-window login & gate scan throughput limiter
     │   │   ├── roles.py                          # Role definitions and role grouping logic
     │   │   └── tokens.py                         # HS256 JWT session tokens and cookie management
     │   ├── services/                             # Core business logic (no FastAPI imports)
     │   │   ├── audit.py                          # Atomic audit log recorder
+    │   │   ├── badge_service.py                  # 256-bit token generation, SHA-256 storage, segno SVG, and revocation
+    │   │   ├── checkin_service.py                # Gate scan processing, 5s deduplication, state transitions, shift warning
     │   │   ├── connectivity.py                   # Single source of truth for node and gateway online calculation
+    │   │   ├── flag_clearing.py                  # Manual flag clearance, note audit sanitization, manual 'out' event
+    │   │   ├── flag_service.py                   # Background shift evaluation past grace and idempotent check_flag creation
     │   │   ├── gateway_keys.py                   # Cryptographic 256-bit API key generator and SHA-256 verifier
     │   │   ├── hazard_classifier.py              # Pure function classifier matching firmware thresholds
+    │   │   ├── headcount.py                      # DISTINCT ON latest check event, live inside counts, scheduled counts
     │   │   ├── ingest_service.py                 # Packet verification, deduplication, and persistence
     │   │   ├── latest_readings.py                # PostgreSQL distinct_on query optimizer for telemetry readings
     │   │   ├── node_placement.py                 # Node placement completeness helpers and expressions
     │   │   ├── node_serializer.py                # Telemetry dictionary serializer (superior & worker views)
     │   │   ├── packet_codec.py                   # 38-byte struct parse and pack definition
-    │   │   ├── shift_service.py                  # Shift creation, duration checks, overlap detection, weekly hours arithmetic
+    │   │   ├── shift_service.py                  # Shift creation, duration checks, overlap detection, exclusion constraint handling
     │   │   ├── tunnel_scope.py                   # Worker current tunnel resolution and miner visible tunnel scoping
     │   │   ├── watchdog_service.py               # Watchdog offline timeout evaluation and alert auto-resolution
+    │   │   ├── weekly_hours.py                   # Rolling week boundary splitting, hours summing, and warning generation
     │   │   └── worker_queries.py                 # Scoped worker roster queries and worker shift detail history
     │   └── static/                               # Web dashboard client files
     │       ├── app.js                            # Leaflet and dashboard client logic
+    │       ├── checkin.js                        # Gate scan controller and scanner interface
+    │       ├── headcount_flags.js                # Badge modal, live headcount polling, and flag resolution UI
     │       ├── index.html                        # Dashboard HTML layout
     │       └── style.css                         # Neo-Brutalist dashboard styles
     └── tests/                                    # Pytest test suite (runs on test database)
@@ -135,7 +149,9 @@ coal-mine-subsidence-monitoring/
         ├── test_seed.py                          # seed_manager idempotency and password reset tests
         ├── test_step3_phase_b.py                 # Step 3 gateway keys, placement, audit, and manager journey tests
         ├── test_step4_watchdog.py                # Step 4 watchdog, connectivity boundary, and scoping tests
-        └── test_step5_shifts.py                  # Step 5 shifts, overlap rejection, exclusion constraint, scoping tests
+        ├── test_step5_policy.py                  # Step 5 policy enforcement, employee profile, redaction, and N+1 tests
+        ├── test_step5_shifts.py                  # Step 5 shifts, overlap rejection, exclusion constraint, scoping tests
+        └── test_step6_badges_and_headcount.py    # Step 6 QR badges, gate scanning, headcount, flags, and concurrency tests
 ```
 
 ---
@@ -187,6 +203,10 @@ Configuration is loaded from `.env` in the repository root using `python-dotenv`
 | `WEEKLY_HOURS_LIMIT` | No | Maximum recommended shift hours per worker per week before non-blocking warning | `48.0` |
 | `MAX_SHIFT_HOURS` | No | Maximum allowed duration in hours for a single continuous shift assignment | `16.0` |
 | `HOURS_TIMEZONE` | No | Valid IANA timezone for weekly shift hour boundary splitting (Monday 00:00 to Monday 00:00) | `Asia/Kolkata` |
+| `CHECKOUT_GRACE_MIN` | Step 6 | Grace period in minutes after shift end before raising missing check-out flag | `15` |
+| `CHECKIN_EARLY_MIN` | Step 6 | Maximum minutes before shift start that a check-in is associated with the shift | `120` |
+| `CHECK_FLAG_OVERDUE_HOURS` | Step 6 | Hours elapsed since flag creation before marking a check flag overdue | `8` |
+| `SCAN_RATE_PER_MIN` | Step 6 | Maximum permitted gate scan operations per minute per scanner user | `60` |
 
 ---
 
@@ -251,7 +271,7 @@ python -m pytest -v
 
 ## 6. Data Model
 
-The schema is managed strictly via Alembic migrations. The database contains these 12 core tables:
+The schema is managed strictly via Alembic migrations. The database contains these 15 core tables:
 
 ### 1. `companies`
 - `id` (`Integer`, PK, autoincrement)
@@ -403,6 +423,55 @@ The schema is managed strictly via Alembic migrations. The database contains the
   - `ix_assignments_user_id_starts_at`: `(user_id, starts_at DESC)`
   - `ix_assignments_tunnel_id_starts_at`: `(tunnel_id, starts_at)`
 
+### 13. `qr_tokens`
+- `id` (`BigInteger`, PK, autoincrement)
+- `user_id` (`Integer`, FK -> `users.id` ON DELETE CASCADE, nullable=False, index)
+- `token_hash` (`String(64)`, nullable=False, unique): SHA-256 hex digest of random 256-bit token (`cmb_` + `secrets.token_urlsafe(32)`). Plaintext tokens are strictly shown once on issuance and never stored or logged.
+- `issued_at` (`TIMESTAMPTZ`, nullable=False, server_default=`now()`)
+- `issued_by` (`Integer`, FK -> `users.id` ON DELETE SET NULL, nullable=True)
+- `revoked_at` (`TIMESTAMPTZ`, nullable=True)
+- `revoked_by` (`Integer`, FK -> `users.id` ON DELETE SET NULL, nullable=True)
+- **Partial Unique Index**:
+  - `uq_qr_tokens_one_active`: `UNIQUE (user_id) WHERE revoked_at IS NULL` (strictly enforces at most one active badge per worker)
+
+### 14. `check_events`
+- `id` (`BigInteger`, PK, autoincrement)
+- `user_id` (`Integer`, FK -> `users.id` ON DELETE CASCADE, nullable=False)
+- `tunnel_id` (`Integer`, FK -> `tunnels.id` ON DELETE RESTRICT, nullable=False)
+- `direction` (`String(3)`, nullable=False, check constraint: `direction IN ('in', 'out')`)
+- `method` (`String(8)`, nullable=False, check constraint: `method IN ('qr', 'manual')`)
+- `scanned_at` (`TIMESTAMPTZ`, nullable=False, server_default=`now()`)
+- `scanned_by` (`Integer`, FK -> `users.id` ON DELETE SET NULL, nullable=True)
+- **Indexes**:
+  - `ix_check_events_user_id_scanned_at`: `(user_id, scanned_at DESC)`
+  - `ix_check_events_tunnel_id_scanned_at`: `(tunnel_id, scanned_at DESC)`
+
+### 15. `check_flags`
+- `id` (`BigInteger`, PK, autoincrement)
+- `user_id` (`Integer`, FK -> `users.id` ON DELETE CASCADE, nullable=False, index)
+- `assignment_id` (`BigInteger`, FK -> `assignments.id` ON DELETE CASCADE, nullable=False, unique)
+- `raised_at` (`TIMESTAMPTZ`, nullable=False, server_default=`now()`)
+- `cleared_by` (`Integer`, FK -> `users.id` ON DELETE SET NULL, nullable=True)
+- `cleared_at` (`TIMESTAMPTZ`, nullable=True)
+- `note` (`String(500)`, nullable=True)
+- **Partial Index**:
+  - `ix_check_flags_raised_at`: `(raised_at) WHERE cleared_at IS NULL`
+
+> **Worker "Inside Tunnel" Headcount Definition (Single Source of Truth - `services/headcount.py`)**:  
+> A worker is defined as **INSIDE** a tunnel if and only if their latest check event (ordered by `scanned_at DESC, id DESC` using PostgreSQL `DISTINCT ON (user_id)`) has `direction = 'in'`. The tunnel they occupy is that event's `tunnel_id`. This query is calculated across all company tunnels in a single constant pass without per-worker queries.
+
+> **Gate Scan Invariants and Duplicate Suppression (`services/checkin_service.py`)**:  
+> - **Duplicate Window**: An identical scan for the same worker, tunnel, and direction within 5.0 seconds is treated as a duplicate scan, returning HTTP 200 with `duplicate: true` and skipping row insertion.
+> - **Conflict Detection**: Direction `"in"` while already inside returns HTTP 409 `{"code": "already_checked_in", "tunnel_id"}`; direction `"out"` while outside returns HTTP 409 `{"code": "not_checked_in"}`.
+> - **Shift Association Warning**: Checking into a tunnel without an active or imminent scheduled shift (within `CHECKIN_EARLY_MIN` = 120 minutes) returns HTTP 200 with non-blocking warning `{"code": "no_active_shift"}`.
+> - **Late Clear on Scan Out**: A successful `"out"` scan automatically resolves any open `check_flags` for that worker with note `"scanned out late"`.
+> - **Rate Limiting**: Scanners are rate-limited to `SCAN_RATE_PER_MIN` (default 60/min), and scanner accounts submitting 10 unknown badge tokens within 1 minute receive HTTP 429 with `Retry-After`.
+
+> **Shift Check-Out Exception Flags & Resolution (`services/flag_service.py` & `services/flag_clearing.py`)**:  
+> - The background flag cycle evaluates shifts that ended at least `CHECKOUT_GRACE_MIN` (15m) ago (up to 7 days lookback) where the worker checked in during the shift window and remains inside. Idempotently creates at most one `check_flags` entry per assignment.
+> - Manual clearance via `PATCH /api/check-flags/{id}` requires a note (3-500 chars), records the clearing actor and timestamp, and automatically appends a manual `"out"` check event for that tunnel, immediately correcting live underground headcount.
+> - Flags unclosed after `CHECK_FLAG_OVERDUE_HOURS` (8h) are flagged as `overdue: true` in the API and highlighted in red on the supervisor dashboard. Clear operations write audit entries recording the flag ID only, strictly omitting reviewer note text.
+
 > **Worker "Current Tunnel" and Visible Tunnels Rule (Single Source of Truth - `services/tunnel_scope.py`)**:  
 > A worker's current tunnel is determined chronologically:
 > 1. The tunnel of the assignment that is active **now** (`starts_at <= now < ends_at`).
@@ -526,13 +595,21 @@ Radio command sent by gateway over ESP-NOW:
 | `POST` | `/api/demo/toggle-live`| Manager Only | JSON (optional): `{"enable": bool}`. Returns 404 when `ENABLE_DEMO_ROUTES=false`. | `{"running": bool}` | `200`, `401`, `403`, `404` |
 | `GET` | `/api/demo/status` | Manager Only | Returns 404 when `ENABLE_DEMO_ROUTES=false`. | `{"running": bool}` | `200`, `401`, `403`, `404` |
 | `POST` | `/api/demo/trigger-hazard` | Manager Only | JSON: `{"gateway_mac_address", "node_id", "level"}`. 404 when demo disabled. | `{"message": "..."}` | `200`, `401`, `403`, `404` |
-| `GET` | `/api/workers` | Superiors Only | Query: `mine_id`, `tunnel_id`, `q`. Scoped to permitted mines. | `{"workers": [{"id", "username", "full_name", "role", "active", "employee_no", "current_tunnel"}]}` | `200`, `401`, `403`, `404` |
-| `GET` | `/api/workers/{id}` | Superiors Only | Path param. Permitted mines only. | Full worker details, phone, emergency contact, `upcoming_shifts`, `past_shifts` | `200`, `401`, `403`, `404` |
-| `PUT` | `/api/workers/{id}/profile` | Manager Only | JSON: `employee_no`, `phone`, `emergency_contact_name`, `emergency_contact_phone`, `joined_on`. Records audit (`worker.profile_update`) with changed fields only. | Updated profile object | `200`, `400`, `401`, `403`, `404` |
-| `POST` | `/api/assignments` | Manager or Safety Officer | JSON: `user_id`, `tunnel_id`, `starts_at`, `ends_at` (ISO with offset). Validates duration <= 16h, mine assignment, active status, overlap. Records audit (`assignment.create`). | `{"assignment": {...}, "warnings": [...]}` | `201`, `400`, `401`, `403`, `404`, `409`, `422` |
-| `PATCH` | `/api/assignments/{id}` | Manager or Safety Officer | JSON: `ends_at` (ISO with offset). Shortens shift only (`starts_at < ends_at <= current_ends_at`). Records audit (`assignment.update`). | `{"assignment": {...}}` | `200`, `400`, `401`, `403`, `404`, `422` |
-| `DELETE` | `/api/assignments/{id}` | Manager or Safety Officer | Path param. Future shifts only (started shifts rejected with 409). Records audit (`assignment.delete`). | `{"message": "Assignment deleted successfully"}` | `200`, `401`, `403`, `404`, `409` |
-| `GET` | `/api/assignments` | Superiors Only | Query: `user_id`, `mine_id`, `tunnel_id`, `from`, `to`. Scoped to permitted mines. | `{"assignments": [...]}` | `200`, `401`, `403`, `404`, `422` |
+| `GET` | `/api/workers` | Superiors Only | Query: `mine_id`, `tunnel_id`, `q`. Scoped to permitted mines. Includes `has_badge` and `badge_issued_at`. | `{"workers": [{"id", "username", "full_name", "role", "active", "employee_no", "has_badge", "badge_issued_at", "current_tunnel"}]}` | `200`, `401`, `403`, `404` |
+| `GET` | `/api/workers/{id}` | Superiors Only | Path param. Permitted mines only. Includes `has_badge` and `badge_issued_at`. | Full worker details, phone, emergency contact, `has_badge`, `badge_issued_at`, `upcoming_shifts`, `past_shifts` | `200`, `401`, `403`, `404` |
+| `PUT` | `/api/workers/{id}/profile` | Manager Only | JSON: `employee_no`, `phone`, `emergency_contact_name`, `emergency_contact_phone`, `joined_on`. Catch duplicate `employee_no` (409) and non-worker roles (400). Records audit (`worker.profile_update`) with changed fields only. | Updated profile object | `200`, `400`, `401`, `403`, `404`, `409`, `422` |
+| `POST` | `/api/workers/{id}/badge` | Manager Only | Issues 256-bit QR badge for active foreman/miner. Revokes prior tokens. Header `Cache-Control: no-store`. Records audit (`badge.issue`). Plaintext token shown once. | `{"token", "badge_svg", "issued_at", "worker": {"id", "full_name", "employee_no"}}` | `200`, `400`, `401`, `403`, `404` |
+| `DELETE` | `/api/workers/{id}/badge` | Manager or Foreman (own tunnel) | Revokes active badges for worker. Non-manager/non-foreman get 403; non-matching tunnel gets 404. Records audit (`badge.revoke`). | `{"revoked": count}` | `200`, `401`, `403`, `404` |
+| `POST` | `/api/checkins` | Scanners (Manager, Safety Officer, Engineer, Foreman; Miners get 403) | JSON: `{"token", "direction": "in"|"out", "tunnel_id"}`. Scans QR badge. 5s deduplication, state transitions, shift association warning. Rate limited (429). | `{"duplicate": bool, "worker": {...}, "direction": str, "tunnel": {...}, "scanned_at": str, "warnings": [...]}` | `200`, `401`, `403`, `404`, `409`, `422`, `429` |
+| `POST` | `/api/checkins/manual` | Scanners (Manager, Safety Officer, Engineer, Foreman; Miners get 403) | JSON: `{"user_id", "direction": "in"|"out", "tunnel_id", "note"}`. Records manual entry when badge unavailable. Records audit (`checkin.manual`). Rate limited (429). | `{"duplicate": bool, "worker": {...}, "direction": str, "tunnel": {...}, "scanned_at": str, "warnings": [...]}` | `200`, `401`, `403`, `404`, `409`, `422`, `429` |
+| `GET` | `/api/checkins` | Scanners (Manager, Safety Officer, Engineer, Foreman; Miners get 403) | Query: `tunnel_id`, `limit` (default 20, max 100). Scoped (foreman: own tunnel only). Ordered by `scanned_at DESC`. | `{"events": [{"id", "worker": {...}, "tunnel": {...}, "direction", "method", "scanned_at", "scanner": {...}}]}` | `200`, `401`, `403`, `404` |
+| `GET` | `/api/headcount` | Scanners (Manager, Safety Officer, Engineer, Foreman; Miners get 403) | Query: `mine_id` (optional for superiors). Foreman gets own tunnel only; superiors get all allowed tunnels. Live inside count via DISTINCT ON latest check events and active scheduled counts. | Dict of `tunnel_id -> {"tunnel_id", "inside", "scheduled_now", "workers": [{"id", "full_name", "employee_no", "scanned_at"}]}` | `200`, `401`, `403`, `404` |
+| `GET` | `/api/check-flags` | Scanners (Manager, Safety Officer, Engineer, Foreman; Miners get 403) | Query: `status` (`open` or `all`, default `open`), `mine_id`, `tunnel_id`. Scoped (foreman: own tunnel only). Flags shifts ended without check-out past grace. | `{"flags": [{"id", "worker": {...}, "assignment": {...}, "raised_at", "overdue": bool, "cleared_at", "cleared_by_name", "note"}]}` | `200`, `401`, `403`, `404` |
+| `PATCH` | `/api/check-flags/{id}` | Scanners (Foreman: own tunnel only; Superiors: scoped; others 404) | JSON: `{"note"}` (3-500 chars). Clears flag, appends manual 'out' event to fix headcount, and records audit (`check_flag.clear`) with flag ID only (omitting note text). | Updated flag object with `cleared_at` and `cleared_by_name` | `200`, `401`, `403`, `404`, `409`, `422` |
+| `POST` | `/api/assignments` | Superiors Only (Manager, Safety Officer, Engineer) | JSON: `user_id`, `tunnel_id`, `starts_at`, `ends_at` (ISO with offset). Validates duration <= 16h, mine assignment, active status, overlap. Records audit (`assignment.create`). | `{"assignment": {...}, "warnings": [...]}` | `201`, `400`, `401`, `403`, `404`, `409`, `422` |
+| `PATCH` | `/api/assignments/{id}` | Superiors Only (Manager, Safety Officer, Engineer) | JSON: `ends_at` (ISO with offset). Shortens shift only (`starts_at < ends_at <= current_ends_at`). Records audit (`assignment.update`). | `{"assignment": {...}}` | `200`, `400`, `401`, `403`, `404`, `422` |
+| `DELETE` | `/api/assignments/{id}` | Superiors Only (Manager, Safety Officer, Engineer) | Path param. Future shifts only (started shifts rejected with 409). Records audit (`assignment.delete`). | `{"message": "Assignment deleted successfully"}` | `200`, `401`, `403`, `404`, `409` |
+| `GET` | `/api/assignments` | Superiors Only | Query: `user_id`, `mine_id`, `tunnel_id`, `from`, `to`, `limit` (default 500, max 1000), `offset` (default 0). Default window: `now-7d .. now+30d`. Eager-loads user, worker_profile, tunnel, and mine. Scoped to permitted mines. | `{"assignments": [...]}` | `200`, `401`, `403`, `404`, `422` |
 | `GET` | `/api/me/shifts` | Any Authenticated User | Query: `from`, `to` (optional). Worker-safe view (omits `created_by`). | `{"shifts": [...]}` | `200`, `401`, `422` |
 | `GET` | `/api/me/profile` | Any Authenticated User | None. Returns own worker profile with current tunnel, or empty object for non-workers. | Worker profile object or `{}` | `200`, `401` |
 | `GET` | `/` | Browser | None | HTML dashboard (`index.html`) | `200` |
@@ -540,7 +617,6 @@ Radio command sent by gateway over ESP-NOW:
 ### Planned Routes (Future Steps)
 - `GET /api/mines/{id}/profile` (*Planned - Step 9*)
 - `POST /api/nodes/{id}/commands` (*Planned - Step 7*)
-- `POST /api/checkins` (*Planned - Step 6*)
 - `POST /api/incidents` (*Planned - Step 7*)
 - `POST /api/worker-reports` (*Planned - Step 8*)
 
@@ -625,7 +701,7 @@ Radio command sent by gateway over ESP-NOW:
 | **Step 3** | Mines, tunnels, gateways and node placement | **Done** | A brand-new Manager can go from an empty account to a placed node carrying a tunnel, entirely through the app: log in, change password, create a mine, add a tunnel, register a gateway (key shown once), see the device appear in the Unplaced queue after it posts with that key, and place it on the map with a tunnel. | 2026-11-22 |
 | **Step 4** | Watchdog and offline detection | **Done** | Pure watchdog cycle and background runner with Postgres advisory lock, alerts table with partial unique open-alert guarantees, offline threshold evaluations, gateway failure suppression, alert ack lifecycle with audit logging, and token_version session invalidation. | 2026-11-22 |
 | **Step 5** | Workers and shifts | **Done** | Manager or Safety Officer assigns worker to a tunnel for a shift; second overlapping shift for the same worker is rejected with 409 naming the clashing shift; the worker sees both upcoming and past shifts under "My hours"; a miner sees only the nodes of their own tunnel (a foreman keeps mine-level view); and the weekly-hours warning appears when the limit is exceeded. | 2026-11-22 |
-| **Step 6** | QR check-in and headcount | *Not started* | Badges, scanner page, check events, check flags, headcount panel. Scanning in and out changes headcount; missed check-out raises flag. | — |
+| **Step 6** | QR check-in and headcount | **Done** | Badges, scanner page, check events, check flags, headcount panel. Scanning in and out changes headcount; missed check-out raises flag. | 2026-11-22 |
 | **Step 7** | Incidents and roll call | *Not started* | Manual broadcast, roster snapshot, accounted-for marking, buzzer commands to nodes. Incident lists who is unaccounted for. | — |
 | **Step 8** | Worker reports and SOS | *Not started* | Report form, inbox, status flow, node SOS button and SOS packet. Report moves through workflow; button press shows as SOS report within seconds. | — |
 | **Step 9** | Mine profile and output tracking | *Not started* | Profile fields, contacts, plan vs actual. Mine page shows all five profile groups. | — |
@@ -658,6 +734,75 @@ The following firmware features from Step 4 require modifying packet types or fi
 ---
 
 ## 12. Changelog
+
+### 2026-11-22 - Step 6: QR Badges, Gate Check-In/Out, Live Headcount, and Check Flags
+- **Database Migration (`e2b8b74826ca`)**:
+  - Dropped redundant single-column indexes `ix_assignments_user_id` and `ix_assignments_tunnel_id` (covered by compound indexes `ix_assignments_user_id_starts_at` and `ix_assignments_tunnel_id_starts_at`).
+  - Created `qr_tokens` table with `id` (bigserial PK), `user_id` (FK users CASCADE), `token_hash` (varchar(64) UNIQUE), `issued_at`, `issued_by`, `revoked_at`, `revoked_by`. Partial UNIQUE index `uq_qr_tokens_one_active` on `(user_id) WHERE revoked_at IS NULL` strictly enforces at most one active badge per worker.
+  - Created `check_events` table with `id` (bigserial PK), `user_id` (FK users CASCADE), `tunnel_id` (FK tunnels RESTRICT), `direction` (CHECK IN `'in', 'out'`), `method` (CHECK IN `'qr', 'manual'`), `scanned_at`, `scanned_by`. Compound indexes on `(user_id, scanned_at DESC)` and `(tunnel_id, scanned_at DESC)`.
+  - Created `check_flags` table with `id` (bigserial PK), `user_id` (FK users CASCADE), `assignment_id` (FK assignments CASCADE UNIQUE), `raised_at`, `cleared_by`, `cleared_at`, `note` (varchar(500)). Partial index `ix_check_flags_raised_at` on `(raised_at) WHERE cleared_at IS NULL`.
+  - Tested migration downgrade `-1` and upgrade `head` cleanly with zero drift on `alembic check`.
+- **Cryptographic Badge Lifecycle (`services/badge_service.py`)**:
+  - Token generation: `cmb_` + `secrets.token_urlsafe(32)` (256-bit entropy).
+  - SHA-256 digest stored in database; plaintext token returned once on issuance and never persisted or logged.
+  - Inline QR SVG rendered via `segno` (error correction level 'M', scale 6).
+  - Atomic revocation of prior active badges upon re-issuance.
+  - Audit logging (`badge.issue`, `badge.revoke`) strictly omitting secret tokens or hashes.
+- **Gate Check-In/Out Engine (`services/checkin_service.py`)**:
+  - Atomic row locking (`SELECT id FROM users WHERE id = :worker_id FOR UPDATE`) prevents concurrent scan race conditions.
+  - 5-second duplicate suppression window returns HTTP 200 with `duplicate: true`.
+  - State transitions strictly validated: check-in while inside returns HTTP 409 `{"code": "already_checked_in", "tunnel_id"}`; check-out while outside returns HTTP 409 `{"code": "not_checked_in"}`.
+  - Imminent shift check emits non-blocking warning `{"code": "no_active_shift"}` when checking in without a scheduled shift within `CHECKIN_EARLY_MIN` (120 min).
+  - Check-out scan automatically resolves open check flags with note `"scanned out late"`.
+  - Rate limiting via sliding in-memory window (`SCAN_RATE_PER_MIN` = 60/min and 10 unknown badge attempts/min returning HTTP 429 with `Retry-After`).
+- **Live Headcount & Location Tracking (`services/headcount.py`)**:
+  - Single source of truth: Worker is underground if and only if their latest check event (by `scanned_at DESC, id DESC` using PostgreSQL `DISTINCT ON`) has `direction = 'in'`.
+  - Constant-time single query calculates live inside workers and active scheduled workers across all tunnels.
+- **Shift Check-Out Flags & Daemon Integration (`services/flag_service.py`, `watchdog_runner.py`)**:
+  - Background runner evaluates shifts ended past `CHECKOUT_GRACE_MIN` (15m) without check-out, raising idempotent `check_flags`.
+  - Runner acquires PostgreSQL advisory lock `FLAG_LOCK_KEY` (8392105), running independently from connectivity watchdog.
+  - Manual flag clearance (`services/flag_clearing.py`) validates note (3-500 chars), records clearance timestamp and actor, and atomically appends a manual `"out"` check event that corrects live underground headcount.
+  - Audits flag clearance recording flag ID only (strictly omitting review note text).
+- **REST Endpoints & Access Control**:
+  - `POST /api/workers/{id}/badge`: Manager only; `Cache-Control: no-store`.
+  - `DELETE /api/workers/{id}/badge`: Manager, or Foreman for their current tunnel (others 404).
+  - `POST /api/checkins`: Scanners (`manager`, `safety_officer`, `engineer`, `foreman`; miners get 403).
+  - `POST /api/checkins/manual`: Scanners; rate limited and audited.
+  - `GET /api/checkins`: Scanners; query `tunnel_id` and `limit` (default 20, max 100); scoped.
+  - `GET /api/headcount`: Scanners; query `mine_id`; foreman gets own tunnel only, superiors get all allowed tunnels.
+  - `GET /api/check-flags`: Scanners; query `status=open|all`, `mine_id`, `tunnel_id`; marks `overdue` when > 8h.
+  - `PATCH /api/check-flags/{id}`: Scanners; requires note (3-500 chars).
+- **Frontend Dashboard Enhancements (`index.html`, `static/checkin.js`)**:
+  - Worker detail pane: "Issue badge" shows QR code modal (render `badge_svg`, name, employee_no), Print button with print CSS, "This badge is shown only once" warning. Modal cleaned from DOM and never stored in `localStorage`. "Revoke badge" button with confirm dialog.
+  - Gate scanner modal: IN/OUT direction toggle, tunnel selector (locked for foreman), USB scanner auto-focus/Enter key support, green success / red error banner, and last 20 scans table.
+  - Live Headcount & Flags console: Real-time tunnel headcount (polled every 10s), open check-out flags with overdue highlight, and clear flag resolution modal.
+- **Automated Verification**:
+  - Added `tests/test_step6_badges_and_headcount.py` with 10 comprehensive tests covering badge lifecycle, SHA-256 storage, partial unique active index, cache headers, scan deduplication, state transition 409 conflicts, rate limiting (429), headcount math, flag background cycle past grace, manual clearance and headcount correction, dual-thread barrier race test, watchdog runner isolation, Alembic downgrade/upgrade, and the full Done-When journey.
+  - Updated `POLICY_TABLE` in `tests/test_auth_and_roles.py`.
+  - Full test suite: 92 passed in pytest (0 failures).
+
+### 2026-11-22 - Step 5.5: Hardening
+- **Scheduling RBAC Expansion (A1)**: Expanded write roles for `POST/PATCH/DELETE /api/assignments` to all `SUPERIOR_ROLES` (`manager`, `safety_officer`, `engineer`), matching the v2 design document matrix. Updated `POLICY_TABLE`, route dependencies, and matrix tests.
+- **Worker Profile Integrity & Scoping (A2)**:
+  - Enforced strict role validation in `PUT /api/workers/{id}/profile`: target user belonging to company but not having `foreman` or `miner` role returns HTTP 400 `{"detail": "Worker profile is only allowed for foreman or miner roles"}`; target in another company or missing returns HTTP 404.
+  - Added duplicate `employee_no` pre-check query and caught PostgreSQL unique violation on `uq_worker_profiles_company_employee_no` to consistently return HTTP 409 `{"detail": "Employee number already in use"}`.
+  - Cleaned up unused imports in `routers/workers.py` and `routers/assignments.py`.
+- **N+1 Query Elimination & Default Assignment Window (A3)**:
+  - Added default query window `now - 7d .. now + 30d` for `GET /api/assignments` when neither `from` nor `to` is supplied.
+  - Added validated `limit` (default 500, max 1000) and `offset` (default 0) pagination parameters.
+  - Eager-loaded `user`, `user.worker_profile`, `tunnel`, and `tunnel.mine` via `joinedload` across assignments queries and `services/worker_queries.py`.
+  - Added unit test asserting SQL query count for 50 shifts executes in a constant $\le 4$ queries without N+1 growth.
+- **Savepoint Isolation & Shift Clashing Redaction (A4)**:
+  - Restructured `create_shift` in `services/shift_service.py` to wrap the insert in an atomic SAVEPOINT (`db.begin_nested()`) preventing session invalidation on constraint conflicts.
+  - Isolated catch to PostgreSQL exclusion violation `23P01` (`ex_assignments_user_no_overlap`), re-raising any other `IntegrityError` as generic 400.
+  - Redacted clashing shift metadata when the conflicting shift belongs to a mine outside the caller's authorized scope (returns `{"starts_at", "ends_at"}` without exposing internal `id`, `tunnel_id`, or `tunnel_name`).
+  - Extracted rolling weekly schedule calculations to `services/weekly_hours.py`, maintaining `shift_service.py` under ~300 lines.
+- **Test Hardening & Determinism (A5)**:
+  - Eliminated all time-of-week dependencies by fixing Done-When test dates to a deterministic Monday-aligned calendar schedule.
+  - Replaced single-session exclusion test with a true dual-thread concurrent race test synchronized via `threading.Barrier`, verifying exactly one thread succeeds and the other raises `ShiftOverlapError`.
+  - Added comprehensive `tests/test_step5_policy.py` covering engineer scheduling, foreman/miner 403 blocks, Safety Officer cross-mine 404 isolation, duplicate employee numbers, bad phone validation, manager profile rejection, cross-company assignment mutation 404s, out-of-scope mine clash redaction, and `/api/me/profile` isolation.
+  - Disabled background watchdog runner in test environment (`WATCHDOG_ENABLED=false` in `conftest.py`).
+  - Full test suite: 82 passed in pytest.
 
 ### 2026-11-22 - Step 5: Workers, Assignments, and Shifts
 - **Database Migration (`c1506e641433`)**:

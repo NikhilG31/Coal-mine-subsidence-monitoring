@@ -15,6 +15,9 @@ from app.models.audit_log import AuditLog
 from app.models.alert import Alert
 from app.models.worker_profile import WorkerProfile
 from app.models.assignment import Assignment
+from app.models.qr_token import QRToken
+from app.models.check_event import CheckEvent
+from app.models.check_flag import CheckFlag
 
 __all__ = [
     "Base",
@@ -31,4 +34,7 @@ __all__ = [
     "Alert",
     "WorkerProfile",
     "Assignment",
+    "QRToken",
+    "CheckEvent",
+    "CheckFlag",
 ]

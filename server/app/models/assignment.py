@@ -25,8 +25,8 @@ class Assignment(Base):
     __tablename__ = "assignments"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    tunnel_id = Column(Integer, ForeignKey("tunnels.id", ondelete="RESTRICT"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    tunnel_id = Column(Integer, ForeignKey("tunnels.id", ondelete="RESTRICT"), nullable=False)
     starts_at = Column(DateTime(timezone=True), nullable=False)
     ends_at = Column(DateTime(timezone=True), nullable=False)
     created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

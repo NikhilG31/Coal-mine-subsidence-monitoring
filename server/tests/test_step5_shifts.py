@@ -2,14 +2,14 @@
 
 Tests:
 1. Shift overlap rejection (back-to-back allowed, 1-minute overlap rejected with 409 and clash details).
-2. Database GIST exclusion constraint tested directly (concurrent/dual-session race caught).
+2. Database GIST exclusion constraint tested concurrently (two threads, separate sessions, barrier, ShiftOverlapError).
 3. Validation matrix: wrong company 404, out-of-scope tunnel 404, worker not in mine 400, closed tunnel 400,
    duration > MAX_SHIFT_HOURS 422, naive datetimes 422, shorten shift 200, extend shift 422,
    delete started shift 409, delete future shift 200.
 4. Night shifts and weekly hours splitting across Monday 00:00 boundary in HOURS_TIMEZONE.
 5. Scoping: miner sees only own tunnel's nodes/placements; unassigned miner sees empty; foreman/superior see all.
 6. Privacy & security: miner cannot view others' shifts; worker view omits created_by; audit log sanitization.
-7. Done-when complete end-to-end journey.
+7. Done-when complete end-to-end journey (deterministic fixed-date scheduling).
 """
 import datetime
 from zoneinfo import ZoneInfo
@@ -127,7 +127,13 @@ def test_shift_overlap_rejection_and_back_to_back_allowed(client, db):
 
 
 def test_db_exclusion_constraint_race_caught_directly(db):
-    """Directly tests that Postgres GIST exclusion constraint catches concurrent overlapping inserts."""
+    """Concurrent race test: two threads with separate sessions call create_shift on overlapping ranges.
+    
+    A threading.Barrier synchronizes both threads right before the insert.
+    Exactly one succeeds and the other raises ShiftOverlapError.
+    """
+    import threading
+
     comp = Company(name="Race Test Coal", name_normalized="race test coal")
     db.add(comp)
     db.flush()
@@ -145,31 +151,47 @@ def test_db_exclusion_constraint_race_caught_directly(db):
     db.add(UserMine(user_id=miner.id, mine_id=mine.id))
     db.commit()
 
-    s1 = Assignment(
-        user_id=miner.id,
-        tunnel_id=tunnel.id,
-        starts_at=datetime.datetime(2026, 7, 1, 10, 0, tzinfo=datetime.timezone.utc),
-        ends_at=datetime.datetime(2026, 7, 1, 18, 0, tzinfo=datetime.timezone.utc),
-        created_by=mgr.id,
-    )
-    db.add(s1)
-    db.commit()
+    mgr_id = mgr.id
+    miner_id = miner.id
+    tunnel_id = tunnel.id
 
-    # Second insert directly in DB attempting overlapping shift
-    s2 = Assignment(
-        user_id=miner.id,
-        tunnel_id=tunnel.id,
-        starts_at=datetime.datetime(2026, 7, 1, 14, 0, tzinfo=datetime.timezone.utc),
-        ends_at=datetime.datetime(2026, 7, 1, 20, 0, tzinfo=datetime.timezone.utc),
-        created_by=mgr.id,
-    )
-    db.add(s2)
-    with pytest.raises(Exception) as excinfo:
-        db.commit()
+    barrier = threading.Barrier(2)
+    results = [None, None]
+    exceptions = [None, None]
 
-    # PostgreSQL GIST exclusion constraint violation
-    assert "ex_assignments_user_no_overlap" in str(excinfo.value)
-    db.rollback()
+    def runner(idx: int):
+        session = SessionLocal()
+        try:
+            actor = session.query(User).filter(User.id == mgr_id).first()
+            s_time = datetime.datetime(2028, 7, 1, 10 + idx, 0, tzinfo=datetime.timezone.utc)
+            e_time = datetime.datetime(2028, 7, 1, 18 + idx, 0, tzinfo=datetime.timezone.utc)
+            barrier.wait(timeout=10.0)
+            asgn, warnings = create_shift(
+                session,
+                actor=actor,
+                user_id=miner_id,
+                tunnel_id=tunnel_id,
+                starts_at=s_time,
+                ends_at=e_time,
+            )
+            results[idx] = asgn
+        except Exception as exc:
+            exceptions[idx] = exc
+        finally:
+            session.close()
+
+    t1 = threading.Thread(target=runner, args=(0,))
+    t2 = threading.Thread(target=runner, args=(1,))
+    t1.start()
+    t2.start()
+    t1.join(timeout=10.0)
+    t2.join(timeout=10.0)
+
+    # Exactly one succeeded and the other raised ShiftOverlapError
+    success_count = sum(1 for r in results if r is not None)
+    error_count = sum(1 for e in exceptions if isinstance(e, ShiftOverlapError))
+    assert success_count == 1, f"Expected 1 success, got {success_count}. Errors: {exceptions}"
+    assert error_count == 1, f"Expected 1 ShiftOverlapError, got {error_count}. Errors: {exceptions}"
 
 
 def test_shift_validations_matrix(client, db):
@@ -601,16 +623,13 @@ def test_done_when_end_to_end_journey(client, db):
     # Step 1: Safety Officer assigns miner to North Seam for a shift
     _login(client, safety_off.id)
 
-    # First add some prior shifts so weekly hours limit (48h) will be exceeded
-    now = datetime.datetime.now(datetime.timezone.utc)
+    # First add some prior shifts so weekly hours limit (48h) will be exceeded.
+    # Use deterministic far-future dates: 2030-01-07 is Monday in both UTC and Asia/Kolkata.
     tz = ZoneInfo(HOURS_TIMEZONE)
-    local_now = now.astimezone(tz)
-    local_monday = local_now.replace(hour=0, minute=0, second=0, microsecond=0) - datetime.timedelta(
-        days=local_now.weekday()
-    )
+    local_monday = datetime.datetime(2030, 1, 7, 0, 0, 0, tzinfo=tz)
     utc_monday = local_monday.astimezone(datetime.timezone.utc)
 
-    # Add a past shift earlier this week: 42 hours
+    # Add a past shift earlier that week: 42 hours (Mon 01:00 to Tue 19:00 UTC)
     past_shift = Assignment(
         user_id=miner.id,
         tunnel_id=t_north.id,
@@ -621,9 +640,9 @@ def test_done_when_end_to_end_journey(client, db):
     db.add(past_shift)
     db.commit()
 
-    # Schedule new shift: 8 hours (42 + 8 = 50 hours > 48h limit!)
-    shift1_start = now + datetime.timedelta(hours=1)
-    shift1_end = now + datetime.timedelta(hours=9)
+    # Schedule new shift: 8 hours (Wed 10:00 to 18:00 UTC) (42 + 8 = 50 hours > 48h limit!)
+    shift1_start = utc_monday + datetime.timedelta(days=2, hours=10)
+    shift1_end = utc_monday + datetime.timedelta(days=2, hours=18)
     resp = client.post(
         "/api/assignments",
         json={

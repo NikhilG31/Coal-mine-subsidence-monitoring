@@ -6,9 +6,10 @@ Must NOT handle HTTP requests, import FastAPI components, or mutate worker profi
 import datetime
 from typing import Any, Dict, List, Optional
 from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.models.assignment import Assignment
+from app.models.qr_token import QRToken
 from app.models.tunnel import Tunnel
 from app.models.user import User, UserMine
 from app.models.worker_profile import WorkerProfile
@@ -46,9 +47,10 @@ def list_workers(
         if not tunnel or tunnel.mine_id not in allowed_mine_ids:
             raise WorkerQueryError("Tunnel not found", status_code=404)
 
-    # Base query: workers in the same company
+    # Base query: workers in the same company with worker_profile eager loaded
     query = (
         db.query(User)
+        .options(joinedload(User.worker_profile))
         .outerjoin(WorkerProfile, WorkerProfile.user_id == User.id)
         .filter(
             User.company_id == actor.company_id,
@@ -94,6 +96,17 @@ def list_workers(
     # Pre-fetch tunnels for current_tunnel resolution
     tunnels_map = {t.id: t for t in db.query(Tunnel).filter(Tunnel.mine_id.in_(allowed_mine_ids)).all()}
 
+    # Batch query active QR badges
+    active_tokens = (
+        db.query(QRToken.user_id, QRToken.issued_at)
+        .filter(
+            QRToken.user_id.in_([w.id for w in workers]),
+            QRToken.revoked_at.is_(None),
+        )
+        .all()
+    ) if workers else []
+    active_badges = {row[0]: row[1] for row in active_tokens}
+
     results = []
     for w in workers:
         curr_tid = get_current_tunnel_id(db, w.id, now)
@@ -112,6 +125,7 @@ def list_workers(
                 curr_tunnel_dict = {"id": t.id, "name": t.name, "mine_id": t.mine_id}
 
         emp_no = w.worker_profile.employee_no if w.worker_profile else None
+        issued = active_badges.get(w.id)
         results.append(
             {
                 "id": w.id,
@@ -120,6 +134,8 @@ def list_workers(
                 "role": w.role,
                 "active": w.active,
                 "employee_no": emp_no,
+                "has_badge": issued is not None,
+                "badge_issued_at": issued.astimezone(datetime.timezone.utc).isoformat() if issued else None,
                 "current_tunnel": curr_tunnel_dict,
             }
         )
@@ -143,6 +159,7 @@ def get_worker_detail(
 
     worker = (
         db.query(User)
+        .options(joinedload(User.worker_profile))
         .filter(
             User.id == worker_id,
             User.company_id == actor.company_id,
@@ -170,6 +187,18 @@ def get_worker_detail(
         if t:
             curr_tunnel_dict = {"id": t.id, "name": t.name, "mine_id": t.mine_id}
 
+    active_token = (
+        db.query(QRToken)
+        .filter(QRToken.user_id == worker.id, QRToken.revoked_at.is_(None))
+        .first()
+    )
+    has_badge = active_token is not None
+    badge_issued_at = (
+        active_token.issued_at.astimezone(datetime.timezone.utc).isoformat()
+        if active_token
+        else None
+    )
+
     profile = worker.worker_profile
     emp_no = profile.employee_no if profile else None
     phone = profile.phone if profile else None
@@ -177,18 +206,24 @@ def get_worker_detail(
     em_phone = profile.emergency_contact_phone if profile else None
     joined_on = profile.joined_on.isoformat() if profile and profile.joined_on else None
 
-    # Upcoming shifts: starts_at > now
+    # Upcoming shifts: starts_at > now (eager-load tunnel and tunnel.mine)
     upcoming_shifts = (
         db.query(Assignment)
+        .options(
+            joinedload(Assignment.tunnel).joinedload(Tunnel.mine),
+        )
         .filter(Assignment.user_id == worker.id, Assignment.starts_at > now)
         .order_by(Assignment.starts_at.asc())
         .all()
     )
 
-    # Past shifts: ends_at <= now and within 30 days
+    # Past shifts: ends_at <= now and within 30 days (eager-load tunnel and tunnel.mine)
     thirty_days_ago = now - datetime.timedelta(days=30)
     past_shifts = (
         db.query(Assignment)
+        .options(
+            joinedload(Assignment.tunnel).joinedload(Tunnel.mine),
+        )
         .filter(
             Assignment.user_id == worker.id,
             Assignment.ends_at <= now,
@@ -218,6 +253,8 @@ def get_worker_detail(
         "role": worker.role,
         "active": worker.active,
         "employee_no": emp_no,
+        "has_badge": has_badge,
+        "badge_issued_at": badge_issued_at,
         "phone": phone,
         "emergency_contact_name": em_name,
         "emergency_contact_phone": em_phone,
