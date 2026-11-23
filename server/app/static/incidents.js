@@ -349,7 +349,8 @@ async function handleCloseIncidentSubmit(event) {
 
     if (!res.ok) {
       const err = await res.json();
-      alert(`Cannot close incident: ${err.detail && err.detail.message ? err.detail.message : JSON.stringify(err.detail)}`);
+      const msg = typeof err.detail === 'string' ? err.detail : (err.detail && err.detail.message ? err.detail.message : (err.code ? `${err.code}: ${JSON.stringify(err)}` : JSON.stringify(err)));
+      alert(`Cannot close incident: ${msg}`);
       return;
     }
 

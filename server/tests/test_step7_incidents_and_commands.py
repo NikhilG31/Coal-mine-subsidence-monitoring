@@ -338,8 +338,10 @@ def test_close_incident_unaccounted_conflict_and_confirm(client, db, freeze_cloc
     # 1. Close without confirm -> 409
     res_close_err = client.patch(f"/api/incidents/{inc.id}", json={"close": True, "confirm_unaccounted": False})
     assert res_close_err.status_code == 409
-    assert res_close_err.json()["detail"]["code"] == "unaccounted_workers"
-    assert res_close_err.json()["detail"]["count"] == 1
+    close_err_data = res_close_err.json()
+    assert close_err_data["code"] == "unaccounted_workers"
+    assert close_err_data["count"] == 1
+    assert "personnel remain unaccounted" in close_err_data["detail"]
 
     # 2. Close with confirm -> 200
     res_close_ok = client.patch(
@@ -640,12 +642,18 @@ def test_siren_keepalive_refresh_cycle(db, freeze_clock):
     inc = open_incident(db, mgr, env["mine"].id, t1.id, "Siren Refresh Test", level=3, siren=True, now=t0)
     db.commit()
 
-    # At T0 + 20s (< SIREN_REFRESH_S=45): 0 refreshed
+    # A2: commands must be ACKED to trigger a new buzzer_on when older than SIREN_REFRESH_S (30s)
+    initial_cmds = db.query(NodeCommand).filter(NodeCommand.cmd == "buzzer_on").all()
+    for c in initial_cmds:
+        c.acked_at = t0
+    db.commit()
+
+    # At T0 + 20s (< SIREN_REFRESH_S=30): 0 refreshed
     freeze_clock(t0 + datetime.timedelta(seconds=20))
     assert run_siren_cycle(db, now=t0 + datetime.timedelta(seconds=20)) == 0
 
-    # At T0 + 50s (> SIREN_REFRESH_S): refreshed count = 2 (for 2 placed nodes in tunnel)
-    t_refresh = t0 + datetime.timedelta(seconds=50)
+    # At T0 + 35s (> SIREN_REFRESH_S=30): refreshed count = 2 (for 2 placed nodes in tunnel)
+    t_refresh = t0 + datetime.timedelta(seconds=35)
     freeze_clock(t_refresh)
     assert run_siren_cycle(db, now=t_refresh) == 2
 

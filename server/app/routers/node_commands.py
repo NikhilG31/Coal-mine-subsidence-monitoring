@@ -8,10 +8,11 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session, joinedload
 
+from app.config import COMMAND_TTL_S
 from app.database import get_db
+from app.models.gateway import Gateway
 from app.models.node import Node
 from app.models.node_command import NodeCommand
-from app.models.tunnel import Tunnel
 from app.models.user import User
 from app.schemas.node_commands import (
     CreateNodeCommandRequest,
@@ -27,27 +28,34 @@ from app.security.dependencies import (
 from app.security.roles import SUPERIOR_ROLES
 from app.services import clock
 from app.services.node_command_service import create_command
+from app.services.node_placement import is_placed
 
 router = APIRouter(prefix="/api/nodes", tags=["node_commands"])
 
 
 def _get_scoped_node(node_id: int, user: User, db: Session) -> Node:
-    """Verifies node existence and tenant/mine scoping for the user."""
+    """Verifies node existence and tenant/mine scoping through its gateway.
+
+    A1: Scope a node through its GATEWAY, never through its tunnel:
+    node -> gateway -> gateway.mine -> mine.company_id must equal the user's company,
+    and gateway.mine_id must be in get_allowed_mine_ids; otherwise 404 identical to "not found",
+    for placed AND unplaced nodes.
+    """
     node = (
         db.query(Node)
-        .options(joinedload(Node.tunnel).joinedload(Tunnel.mine))
+        .options(joinedload(Node.gateway).joinedload(Gateway.mine))
         .filter(Node.id == node_id)
         .first()
     )
-    if not node:
+    if not node or not node.gateway or not node.gateway.mine:
         raise HTTPException(status_code=404, detail="Node not found")
 
-    if node.tunnel and node.tunnel.mine:
-        if node.tunnel.mine.company_id != user.company_id:
-            raise HTTPException(status_code=404, detail="Node not found")
-        allowed_mines = get_allowed_mine_ids(db, user)
-        if allowed_mines is not None and node.tunnel.mine_id not in allowed_mines:
-            raise HTTPException(status_code=404, detail="Node not found")
+    if node.gateway.mine.company_id != user.company_id:
+        raise HTTPException(status_code=404, detail="Node not found")
+
+    allowed_mines = get_allowed_mine_ids(db, user)
+    if allowed_mines is not None and node.gateway.mine_id not in allowed_mines:
+        raise HTTPException(status_code=404, detail="Node not found")
 
     return node
 
@@ -59,9 +67,16 @@ def dispatch_command(
     current_user: User = Depends(require_role(*SUPERIOR_ROLES)),
     db: Session = Depends(get_db),
 ):
-    """Superiors only: creates a downlink command for a sensor node."""
+    """Superiors only: creates a downlink command for a sensor node.
+
+    A1: POST .../commands requires the node to be PLACED (is_placed) and its gateway active,
+    else 404 {"detail": "Node not found"}.
+    """
     now = clock.utcnow()
     node = _get_scoped_node(node_id, current_user, db)
+
+    if not is_placed(node) or not node.gateway.active:
+        raise HTTPException(status_code=404, detail="Node not found")
 
     cmd_obj = create_command(db=db, actor=current_user, node=node, cmd=req.cmd, now=now)
     db.commit()
@@ -73,6 +88,7 @@ def dispatch_command(
         cmd=cmd_obj.cmd,
         seq=cmd_obj.seq,
         expires_at=cmd_obj.expires_at.astimezone(datetime.timezone.utc).isoformat(),
+        status="pending",
     )
 
 
@@ -96,9 +112,12 @@ def list_node_commands(
     )
 
     items = []
+    ttl_delta = datetime.timedelta(seconds=COMMAND_TTL_S)
     for c in commands:
         if c.acked_at is not None:
             c_status = "acked"
+        elif c.expires_at < (c.created_at + ttl_delta):
+            c_status = "superseded"
         elif c.expires_at <= now:
             c_status = "expired"
         else:

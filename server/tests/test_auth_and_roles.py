@@ -109,6 +109,10 @@ POLICY_TABLE = {
     ("PATCH", "/api/incidents/{id}"): "superiors_scoped",
     ("POST", "/api/nodes/{node_id}/commands"): "superiors_scoped",
     ("GET", "/api/nodes/{node_id}/commands"): "superiors_scoped",
+    # STEP 8: WORKER REPORTS AND SOS
+    ("POST", "/api/reports"): "any_role_scoped",
+    ("GET", "/api/reports"): "any_role_scoped",
+    ("PATCH", "/api/reports/{id}"): "superiors_scoped",
     ("POST", "/api/demo/seed"): "manager_only",
     ("POST", "/api/demo/step"): "manager_only",
     ("POST", "/api/demo/toggle-live"): "manager_only",

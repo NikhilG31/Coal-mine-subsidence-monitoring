@@ -4,6 +4,7 @@ Owns the POST /api/ingest endpoint, gateway authentication, and HTTP error trans
 Must NOT execute raw database queries directly or alter packet parsing formats.
 """
 import datetime
+import logging
 import time
 from typing import Dict, Optional
 from fastapi import APIRouter, Header, HTTPException, Request, Response
@@ -19,9 +20,11 @@ from app.models.gateway import Gateway
 from app.security.dependencies import security_logger
 from app.services import clock
 from app.services.gateway_keys import verify_key
-from app.services.ingest_service import process_telemetry_packet
+from app.services.ingest_service import SOSHandlingError, process_telemetry_packet
 from app.services.node_command_service import pending_lines_for_gateway
 from app.services.packet_codec import parse_gateway_packet
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["ingest"])
 
@@ -70,11 +73,13 @@ def _authenticate_and_ingest(
             raise HTTPException(status_code=401, detail="Gateway authentication failed")
 
         # 3. Key verification
+        is_unkeyed = False
         if not raw_key:
             if ALLOW_UNKEYED_INGEST:
+                is_unkeyed = True
                 now_mono = time.monotonic()
-                last_warn = _unkeyed_warning_timestamps.get(gateway_mac, 0.0)
-                if now_mono - last_warn >= 3600.0:
+                last_warn = _unkeyed_warning_timestamps.get(gateway_mac)
+                if last_warn is None or (now_mono - last_warn >= 3600.0):
                     security_logger.warning(
                         "ALLOW_UNKEYED_INGEST accepted unkeyed telemetry from gateway MAC %s (IP %s)",
                         gateway_mac,
@@ -101,15 +106,18 @@ def _authenticate_and_ingest(
         _, _, gateway_id = process_telemetry_packet(db, packet_data, now)
 
         # 5. Fetch pending downlink commands for nodes under this gateway
-        command_lines = pending_lines_for_gateway(db, gateway_id, now=now)
+        # When request carried NO X-Gateway-Key (the ALLOW_UNKEYED_INGEST path) always return EMPTY body
+        if is_unkeyed:
+            command_lines = ""
+        else:
+            command_lines = pending_lines_for_gateway(db, gateway_id, now=now)
 
         # 6. Enforce HTTPS requirement on command delivery
         if COMMANDS_REQUIRE_HTTPS and not is_https:
             if command_lines:
                 now_mono = time.monotonic()
-                last_warn = _https_warning_timestamps.get(gateway_id, 0.0)
-                if now_mono - last_warn >= 3600.0:
-                    security_logger.disabled = False
+                last_warn = _https_warning_timestamps.get(gateway_id)
+                if last_warn is None or (now_mono - last_warn >= 3600.0):
                     security_logger.warning(
                         "Withholding node commands for gateway %d: ingest arrived over plaintext HTTP",
                         gateway_id,
@@ -144,9 +152,12 @@ async def ingest(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except SOSHandlingError as e:
+        raise HTTPException(status_code=503, detail="SOS handling failed")
     except HTTPException:
         raise
     except Exception as e:
+        logger.exception("Ingest request processing failed: %s", e)
         raise HTTPException(status_code=500, detail="Internal ingestion error")
 
     return Response(content=command_lines, media_type="text/plain", status_code=200)

@@ -35,13 +35,15 @@ class WatchdogRunner:
 
     def __init__(
         self,
-        interval_s: int = SIREN_REFRESH_S // 2,
+        interval_s: int = WATCHDOG_INTERVAL_S,
         grace_period_s: int = NODE_OFFLINE_AFTER_S,
         lock_key: int = WATCHDOG_LOCK_KEY,
         flag_lock_key: int = FLAG_LOCK_KEY,
         siren_lock_key: int = SIREN_LOCK_KEY,
     ):
         self.interval_s = interval_s
+        self.watchdog_interval_s = float(WATCHDOG_INTERVAL_S)
+        self.siren_interval_s = min(10.0, float(SIREN_REFRESH_S) / 3.0)
         self.grace_period_s = grace_period_s
         self.lock_key = lock_key
         self.flag_lock_key = flag_lock_key
@@ -131,6 +133,7 @@ class WatchdogRunner:
 
             cycle_now = now or clock.utcnow()
             result = run_siren_cycle(db, cycle_now)
+            db.commit()
             logger.debug("Siren cycle completed: %d refreshed", result)
             return result
         except Exception as exc:
@@ -172,15 +175,46 @@ class WatchdogRunner:
 
     def _loop(self) -> None:
         """Loop running until stop_event is set."""
-        logger.info("Watchdog runner daemon thread started (interval: %ds).", self.interval_s)
-        while not self.stop_event.is_set():
-            try:
-                self.run_once()
-            except Exception as exc:
-                logger.exception("Unexpected error in watchdog runner loop: %s", exc)
+        logger.info(
+            "Watchdog runner daemon thread started (watchdog interval: %0.1fs, siren interval: %0.1fs).",
+            self.watchdog_interval_s,
+            self.siren_interval_s,
+        )
+        last_watchdog = 0.0
+        last_flag = 0.0
+        last_siren = 0.0
 
-            # Wait for interval or stop_event
-            self.stop_event.wait(timeout=self.interval_s)
+        while not self.stop_event.is_set():
+            now_mono = time.monotonic()
+
+            # A2: Siren job runs every min(10, SIREN_REFRESH_S / 3) seconds, independent of WATCHDOG_INTERVAL_S
+            siren_interval = min(10.0, float(SIREN_REFRESH_S) / 3.0)
+            if now_mono - last_siren >= siren_interval:
+                try:
+                    self.run_siren_once()
+                except Exception as exc:
+                    logger.exception("Unexpected error in siren cycle execution: %s", exc)
+                last_siren = now_mono
+
+            # Watchdog & flag cycles run according to WATCHDOG_INTERVAL_S
+            if not self.in_grace_period():
+                if now_mono - last_watchdog >= self.watchdog_interval_s:
+                    try:
+                        self.run_watchdog_once()
+                    except Exception as exc:
+                        logger.exception("Unexpected error in watchdog execution: %s", exc)
+                    last_watchdog = now_mono
+
+                if now_mono - last_flag >= self.watchdog_interval_s:
+                    try:
+                        self.run_flag_once()
+                    except Exception as exc:
+                        logger.exception("Unexpected error in flag cycle execution: %s", exc)
+                    last_flag = now_mono
+
+            # Wait in small 0.5s slices or until stop_event is set
+            self.stop_event.wait(timeout=0.5)
+
         logger.info("Watchdog runner daemon thread stopped.")
 
     def start(self) -> None:

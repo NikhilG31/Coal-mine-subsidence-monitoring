@@ -56,7 +56,8 @@ coal-mine-subsidence-monitoring/
     │       ├── e252124b61df_step4_alerts_and_token_version.py # Alerts table, partial unique indexes, user token_version
     │       ├── c1506e641433_step5_workers_assignments_shifts.py # Worker profiles, assignments, and GIST exclusion constraint
     │       ├── e2b8b74826ca_step6_qr_checkin_headcount_flags.py # QR tokens, check events, check flags, partial unique indexes
-    │       └── a69df82fa18b_step7_incidents_roll_call_node_commands.py # Incidents, incident roster snapshot, node commands table
+    │       ├── a69df82fa18b_step7_incidents_roll_call_node_commands.py # Incidents, incident roster snapshot, node commands table
+    │       └── 5d042c33b47c_step8_worker_reports_and_sos.py # Worker reports, device SOS, and partial unique index on open SOS incidents
     ├── app/                                      # Application package
     │   ├── __init__.py                           # App package root
     │   ├── config.py                             # Centralized environment variable loader (no defaults for DB)
@@ -86,7 +87,8 @@ coal-mine-subsidence-monitoring/
     │   │   ├── reading.py                        # Telemetry readings table with partial unique index
     │   │   ├── tunnel.py                         # Underground mine tunnels table
     │   │   ├── user.py                           # Users and UserMine association tables
-    │   │   └── worker_profile.py                 # Worker profile and emergency contact table
+    │   │   ├── worker_profile.py                 # Worker profile and emergency contact table
+    │   │   └── worker_report.py                  # Worker safety problem reports and device SOS distress records
     │   ├── routers/                              # FastAPI area routers (HTTP handling only)
     │   │   ├── alerts.py                         # GET /api/alerts, POST /api/alerts/{id}/ack
     │   │   ├── assignments.py                    # POST/PATCH/DELETE /api/assignments, GET /api/assignments
@@ -106,6 +108,7 @@ coal-mine-subsidence-monitoring/
     │   │   ├── nodes.py                          # GET /api/nodes telemetry list
     │   │   ├── notifications.py                  # GET / POST /api/notifications/config
     │   │   ├── placements.py                     # GET /api/placements, GET /api/unplaced, PATCH/DELETE /api/nodes/{id}/placement
+    │   │   ├── reports.py                        # POST /api/reports, GET /api/reports, PATCH /api/reports/{id}
     │   │   ├── users.py                          # GET/POST /api/users, PATCH/DELETE /api/users/{id}
     │   │   └── workers.py                        # GET /api/workers, GET /api/workers/{id}, PUT /api/workers/{id}/profile, POST/DELETE /api/workers/{id}/badge
     │   ├── schemas/                              # Pydantic serialization schemas and view models
@@ -116,6 +119,7 @@ coal-mine-subsidence-monitoring/
     │   │   ├── node_commands.py                  # CreateCommandRequest, CommandResponse
     │   │   ├── nodes.py                          # WorkerNodeView (strict leakage prevention) & SuperiorNodeView
     │   │   ├── placements.py                     # PlacementsResponse, WorkerPlacementView, SuperiorPlacementView
+    │   │   ├── reports.py                        # CreateReportRequest, UpdateReportRequest, SuperiorReportView, WorkerReportView
     │   │   └── workers.py                        # ProfileUpsertRequest, CreateAssignmentRequest, and worker shift schemas
     │   ├── security/                             # Authentication, RBAC, and cryptographic primitives
     │   │   ├── __init__.py                       # Security package exports
@@ -143,8 +147,11 @@ coal-mine-subsidence-monitoring/
     │   │   ├── node_placement.py                 # Node placement completeness helpers and expressions
     │   │   ├── node_serializer.py                # Telemetry dictionary serializer (superior & worker views)
     │   │   ├── packet_codec.py                   # 38-byte struct parse and pack definition
+    │   │   ├── report_service.py                 # Worker problem reports, rate limiting, and resolution lifecycle
+    │   │   ├── roll_call_service.py              # Evacuation roll call accounting and late arrival snapshot helpers
     │   │   ├── shift_service.py                  # Shift creation, duration checks, overlap detection, exclusion constraint handling
     │   │   ├── siren_service.py                  # Periodic background siren keepalive refresh cycle
+    │   │   ├── sos_service.py                    # Device SOS packet ingestion, 60s merge window, flood guard, and incident creation
     │   │   ├── tunnel_scope.py                   # Worker current tunnel resolution and miner visible tunnel scoping
     │   │   ├── watchdog_service.py               # Watchdog offline timeout evaluation and alert auto-resolution
     │   │   ├── weekly_hours.py                   # Rolling week boundary splitting, hours summing, and warning generation
@@ -155,6 +162,7 @@ coal-mine-subsidence-monitoring/
     │       ├── headcount_flags.js                # Badge modal, live headcount polling, and flag resolution UI
     │       ├── incidents.js                      # Emergency incidents, roll call roster, and buzzer control UI
     │       ├── index.html                        # Dashboard HTML layout
+    │       ├── reports.js                        # Worker hazard reporting, superior inbox, and persistent SOS banner
     │       └── style.css                         # Neo-Brutalist dashboard styles
     └── tests/                                    # Pytest test suite (runs on test database)
         ├── conftest.py                           # TEST_DATABASE_URL fixture, migrations & table truncation
@@ -168,7 +176,9 @@ coal-mine-subsidence-monitoring/
         ├── test_step5_policy.py                  # Step 5 policy enforcement, employee profile, redaction, and N+1 tests
         ├── test_step5_shifts.py                  # Step 5 shifts, overlap rejection, exclusion constraint, scoping tests
         ├── test_step6_badges_and_headcount.py    # Step 6 QR badges, gate scanning, headcount, flags, and concurrency tests
-        └── test_step7_incidents_and_commands.py  # Step 7 emergency incidents, roll call snapshot, commands, and siren tests
+        ├── test_step7_hardening.py               # Step 7.5 gateway scoping, siren cycle, auto-incidents, retention tests
+        ├── test_step7_incidents_and_commands.py  # Step 7 emergency incidents, roll call snapshot, commands, and siren tests
+        └── test_step8_reports_and_sos.py         # Step 8 worker reports, device SOS, merge window, and flood guard tests
 ```
 
 ---
@@ -225,9 +235,16 @@ Configuration is loaded from `.env` in the repository root using `python-dotenv`
 | `CHECK_FLAG_OVERDUE_HOURS` | Step 6 | Hours elapsed since flag creation before marking a check flag overdue | `8` |
 | `SCAN_RATE_PER_MIN` | Step 6 | Maximum permitted gate scan operations per minute per scanner user | `60` |
 | `COMMAND_TTL_S` | Step 7 | Maximum pending node command lifetime in seconds before expiry (min 10, max 3600) | `120` |
-| `SIREN_REFRESH_S` | Step 7 | Evaluation interval in seconds for background siren keepalive refresh cycle (min 10, max 300) | `45` |
+| `SIREN_REFRESH_S` | Step 7 | Evaluation interval in seconds for background siren keepalive refresh cycle (min 5, max 40) | `30` |
 | `COMMANDS_REQUIRE_HTTPS` | Step 7 | Enforce HTTPS scheme on ingest POST before returning downlink node commands | `true` |
 | `TRUST_FORWARDED_PROTO` | Step 7 | Trust `X-Forwarded-Proto` header for HTTPS check behind TLS reverse proxy | `false` |
+| `COMMAND_RETENTION_DAYS` | Step 7.5 | Retention period in days for acked or expired node commands before watchdog purge | `30` |
+| `AUTO_INCIDENT_SIREN` | Step 7.5 | When `true`, automatically opened critical incidents enable sirens immediately. When `false`, incidents open silently to prevent false alarm sirens until verified. | `true` |
+| `SOS_MERGE_WINDOW_S` | Step 8 | Time window in seconds during which repeated device SOS signals merge into existing report (min 10, max 300) | `60` |
+| `SOS_MAX_NEW_PER_HOUR` | Step 8 | Maximum new device SOS reports created per node per hour before flood guard merges (min 1, max 60) | `6` |
+| `SOS_INCIDENT_SIREN` | Step 8 | Whether automatically created device SOS incidents activate sirens immediately | `false` |
+| `REPORT_RATE_PER_HOUR` | Step 8 | Maximum problem reports a single worker user can submit per hour before 429 rate limit (min 1, max 100) | `20` |
+| `REPORT_MAX_AGE_DAYS_WORKER_VIEW` | Step 8 | Maximum lookback age in days for reports visible in worker self-service view (min 1, max 365) | `90` |
 
 ---
 
@@ -494,8 +511,9 @@ The schema is managed strictly via Alembic migrations. The database contains the
 - `close_note` (`String(500)`, nullable=True)
 - **Constraints**:
   - `ck_incidents_closed_sync`: `CHECK ((status = 'closed') = (closed_at IS NOT NULL))`
-- **Partial Unique Index**:
+- **Partial Unique Indexes**:
   - `uq_incidents_open_auto`: `UNIQUE (tunnel_id) WHERE status = 'open' AND source = 'auto'`
+  - `uq_incidents_open_sos`: `UNIQUE (tunnel_id) WHERE status = 'open' AND source = 'sos'`
 - **Index**:
   - `ix_incidents_mine_opened`: `(mine_id, opened_at DESC)`
 
@@ -523,6 +541,49 @@ The schema is managed strictly via Alembic migrations. The database contains the
 - **Partial Index**:
   - `ix_node_commands_pending`: `(node_id, expires_at) WHERE acked_at IS NULL`
 
+### 19. `worker_reports`
+- `id` (`BigInteger`, PK, autoincrement)
+- `mine_id` (`Integer`, FK -> `mines.id` ON DELETE CASCADE, nullable=False, index)
+- `tunnel_id` (`Integer`, FK -> `tunnels.id` ON DELETE RESTRICT, nullable=True, index)
+- `user_id` (`Integer`, FK -> `users.id` ON DELETE SET NULL, nullable=True, index)
+- `node_id` (`Integer`, FK -> `nodes.id` ON DELETE SET NULL, nullable=True, index)
+- `source` (`String(6)`, nullable=False, check constraint: `source IN ('worker', 'device')`)
+- `type` (`String(16)`, nullable=False, check constraint: `type IN ('injury', 'equipment_fault', 'gas_smell', 'need_help', 'sos')`)
+- `severity` (`String(8)`, nullable=False, check constraint: `severity IN ('low', 'medium', 'high', 'critical')`)
+- `description` (`String(1000)`, nullable=True)
+- `status` (`String(12)`, nullable=False, server_default=`'open'`, check constraint: `status IN ('open', 'acknowledged', 'resolved')`)
+- `created_at` (`TIMESTAMPTZ`, nullable=False, server_default=`now()`)
+- `last_signal_at` (`TIMESTAMPTZ`, nullable=False, server_default=`now()`)
+- `repeat_count` (`Integer`, nullable=False, server_default=`1`, check constraint: `repeat_count >= 1`)
+- `acknowledged_by` (`Integer`, FK -> `users.id` ON DELETE SET NULL, nullable=True)
+- `acknowledged_at` (`TIMESTAMPTZ`, nullable=True)
+- `resolved_by` (`Integer`, FK -> `users.id` ON DELETE SET NULL, nullable=True)
+- `resolved_at` (`TIMESTAMPTZ`, nullable=True)
+- `resolution_note` (`String(500)`, nullable=True)
+- `incident_id` (`BigInteger`, FK -> `incidents.id` ON DELETE SET NULL, nullable=True, index)
+- **Check Constraints**:
+  - `ck_reports_source`: `CHECK (source IN ('worker', 'device'))`
+  - `ck_reports_type`: `CHECK (type IN ('injury', 'equipment_fault', 'gas_smell', 'need_help', 'sos'))`
+  - `ck_reports_severity`: `CHECK (severity IN ('low', 'medium', 'high', 'critical'))`
+  - `ck_reports_status`: `CHECK (status IN ('open', 'acknowledged', 'resolved'))`
+  - `ck_reports_repeat_count`: `CHECK (repeat_count >= 1)`
+  - `ck_reports_source_shape`: `CHECK ((source = 'device' AND node_id IS NOT NULL AND user_id IS NULL AND type = 'sos') OR (source = 'worker'))`
+  - `ck_reports_status_fields`: `CHECK (((status = 'open') AND (acknowledged_at IS NULL) AND (resolved_at IS NULL)) OR ((status = 'acknowledged') AND (acknowledged_at IS NOT NULL) AND (resolved_at IS NULL)) OR ((status = 'resolved') AND (acknowledged_at IS NOT NULL) AND (resolved_at IS NOT NULL)))`
+  - `ck_reports_sos_critical`: `CHECK (type <> 'sos' OR severity = 'critical')`
+- **Indexes**:
+  - `ix_worker_reports_mine_status_created`: `(mine_id, status, created_at DESC)`
+  - `ix_worker_reports_user_created`: `(user_id, created_at DESC)`
+  - `ix_worker_reports_node_signal`: `(node_id, last_signal_at DESC)`
+
+> **Worker Reports Lifecycle and Device SOS Path (`services/report_service.py` & `services/sos_service.py`)**:  
+> - **Worker Hazard Reports**: Any logged-in user can submit problem reports (`injury`, `equipment_fault`, `gas_smell`, `need_help`, `sos`). Submitting `type='sos'` strictly forces `severity='critical'`. Rate limited per user to `REPORT_RATE_PER_HOUR` (default 20/hr, returns 429 with `Retry-After`).
+> - **Superior Inbox & Status Lifecycle**: Reports move strictly `open -> acknowledged -> resolved`. Resolving directly from `open` records both acknowledgment and resolution simultaneously. Any backward or duplicate transition returns HTTP 409 `{"code": "invalid_transition"}`.
+> - **Device SOS Ingestion & Merge Window**: A hardware node packet with `sos_active = 1` forwarded by a gateway merges into the node's latest device-SOS report if its `last_signal_at` is within `SOS_MERGE_WINDOW_S` (default 60s), updating `last_signal_at` and incrementing `repeat_count`. Serialized with `SELECT ... FOR UPDATE` row locking on `nodes`.
+> - **Flood Guard**: At most `SOS_MAX_NEW_PER_HOUR` (default 6) new device SOS reports are created per node per hour. Subsequent signals merge into the latest report with a loud `WARNING` log.
+> - **Incident & Roll Call Integration**: Placed node SOS automatically creates or reuses an open incident (`source = 'sos'`, level 3) and snapshots all workers currently inside the affected tunnel into `incident_roster`. Unplaced nodes create a report with `tunnel_id = NULL` and open no incident.
+> - **503-Then-Retry Contract**: Ingest commits the telemetry reading to the database *before* running SOS handling. If SOS handling fails, HTTP 503 `{"detail": "SOS handling failed"}` is returned. On gateway retry, the reading is identified as a duplicate while still triggering SOS report creation/merging idempotently.
+> - **Privacy and Confidentiality**: Worker view (`WorkerReportView`) strictly omits reporter names, user IDs, node numbers, and gateway data. Hardware gateway MAC addresses NEVER appear in reports API responses to any user.
+
 > **Affected Nodes and Scope (Single Source of Truth - `services/incident_service.py`)**:  
 > An emergency incident covers either a single tunnel (`tunnel_id` set) or an entire mine (`tunnel_id` is `NULL`). Its **AFFECTED nodes** are all **PLACED** nodes (`is_placed(node)`) of that tunnel or mine whose backhaul gateway is active (`active=True`).
 
@@ -530,8 +591,8 @@ The schema is managed strictly via Alembic migrations. The database contains the
 > - **Snapshot on Open**: When an incident is opened (manual broadcast or automatic critical hazard transition), a snapshot of all workers currently **INSIDE** the affected tunnel (or all tunnels of the mine) is atomically recorded in `incident_roster` with `accounted_at = NULL`.
 > - **Automatic Gate Accounting**: When an unaccounted worker checks out (`direction = 'out'`) at a gate scanner of that tunnel/mine, the system automatically marks them accounted (`accounted_at = now, accounted_by = scanner`).
 > - **Late Arrival Accounting**: If a worker checks in (`direction = 'in'`) after incident opening, they are dynamically appended to the incident roster as unaccounted.
-> - **Supervisor Manual Accounting**: Superiors (and foremen for their own tunnel) can manually mark a worker accounted via `POST /api/incidents/{id}/roster/{user_id}/account`.
-> - **Safe Incident Closure**: Closing an incident (`PATCH /api/incidents/{id}/close`) with unaccounted workers requires explicit confirmation (`confirm_unaccounted: true`); otherwise returns HTTP 409 `{"code": "unaccounted_workers", "count"}`. Closure automatically silences active sirens and audits the closure without leaking note text.
+> - **Supervisor Manual Accounting**: Superiors (and foremen for their own tunnel) can manually mark a worker accounted via `POST /api/incidents/{id}/roster/{user_id}/account`. Accounting on a closed incident returns HTTP 409 `{"code": "incident_closed", "detail": "Cannot account personnel on closed incident"}`.
+> - **Safe Incident Closure & State Modification**: Modifying incident state (`PATCH /api/incidents/{id}`) accepts fields `siren: bool`, `close: bool`, `confirm_unaccounted: bool`, and `close_note: str`. Locks the incident row (`SELECT ... FOR UPDATE`). Closing an incident with unaccounted workers requires explicit confirmation (`confirm_unaccounted: true`); otherwise returns HTTP 409 `{"code": "unaccounted_workers", "detail": "...", "count": N}`. All 409 error responses across the incident APIs follow this normalized top-level structure (`code`, `detail`, and optional metadata like `count`). Closure automatically silences active sirens and audits the closure without leaking note text.
 
 > **Downlink Node Commands & Echo Ack Protocol (`services/node_command_service.py` & `routers/ingest.py`)**:  
 > - **Sequence Numbering**: Each command has an integer sequence number `seq` in `1..65535` per node (never 0), wrapping monotonically from 65535 back to 1.
@@ -695,13 +756,22 @@ Radio command sent by gateway over ESP-NOW:
 | `GET` | `/api/assignments` | Superiors Only | Query: `user_id`, `mine_id`, `tunnel_id`, `from`, `to`, `limit` (default 500, max 1000), `offset` (default 0). Default window: `now-7d .. now+30d`. Eager-loads user, worker_profile, tunnel, and mine. Scoped to permitted mines. | `{"assignments": [...]}` | `200`, `401`, `403`, `404`, `422` |
 | `GET` | `/api/me/shifts` | Any Authenticated User | Query: `from`, `to` (optional). Worker-safe view (omits `created_by`). | `{"shifts": [...]}` | `200`, `401`, `422` |
 | `GET` | `/api/me/profile` | Any Authenticated User | None. Returns own worker profile with current tunnel, or empty object for non-workers. | Worker profile object or `{}` | `200`, `401` |
+| `POST` | `/api/incidents` | Superiors Only (Manager, Safety Officer, Engineer) | JSON: `mine_id`, `tunnel_id`, `title`, `level` (1..3), `siren` (bool). Opens incident, snapshots inside workers to roster, locks row FOR UPDATE. Records audit (`incident.open`). | `{"incident": {...}}` | `201`, `400`, `401`, `403`, `404`, `422` |
+| `GET` | `/api/incidents` | Scanners (Manager, Safety Officer, Engineer, Foreman; Miners get 403) | Query: `mine_id`, `tunnel_id`, `status` (`open`, `closed`, `all`), `limit` (default 100, max 500), `offset`. Scoped. Ordered by `opened_at DESC`. | `{"incidents": [...]}` | `200`, `401`, `403`, `404` |
+| `GET` | `/api/incidents/{id}` | Scanners (Manager, Safety Officer, Engineer, Foreman; Miners get 403) | Path param. Returns incident details with unaccounted and roster counts. Scoped. | Incident detail object | `200`, `401`, `403`, `404` |
+| `GET` | `/api/incidents/{id}/roster` | Scanners (Manager, Safety Officer, Engineer, Foreman; Miners get 403) | Path param. Returns snapshot roster with accounting status and `late_arrival` indicator. Scoped. | `{"roster": [{"user_id", "full_name", "employee_no", "accounted_at", "accounted_by", "late_arrival"}]}` | `200`, `401`, `403`, `404` |
+| `POST` | `/api/incidents/{id}/roster/{user_id}/account` | Scanners (Manager, Safety Officer, Engineer, Foreman; Miners get 403) | Path params. Manually accounts worker on evacuation roster. Row locked FOR UPDATE. Closed incident returns 409 `{"code": "incident_closed"}`. Records audit (`incident.account`). | `{"user_id": int, "accounted_at": str, "accounted_by": int}` | `200`, `401`, `403`, `404`, `409` |
+| `PATCH` | `/api/incidents/{id}` | Superiors Only (Manager, Safety Officer, Engineer) | JSON: `siren` (bool), `close` (bool), `confirm_unaccounted` (bool), `close_note` (str). Row locked FOR UPDATE. Closing with unaccounted workers without confirmation returns 409 `{"code": "unaccounted_workers", "count": N}`. Records audit (`incident.close`, `incident.siren`). | `{"incident": {...}}` | `200`, `400`, `401`, `403`, `404`, `409`, `422` |
+| `POST` | `/api/nodes/{node_id}/commands` | Superiors Only (Manager, Safety Officer, Engineer) | Path param. Node must be placed (`is_placed(node)`) and gateway active. JSON: `cmd` (`buzzer_on`, `buzzer_off`, `resume`). Enforces single pending per node. Returns `status: "pending"`. Records audit (`command.create`). | `{"command": {...}, "status": "pending"}` | `201`, `400`, `401`, `403`, `404`, `422` |
+| `GET` | `/api/nodes/{node_id}/commands` | Superiors Only (Manager, Safety Officer, Engineer) | Path param. Scoped through node gateway mine. Returns recent commands with status (`pending`, `acked`, `expired`, `superseded`). | `{"commands": [...]}` | `200`, `401`, `403`, `404` |
+| `POST` | `/api/reports` | Any Authenticated User | JSON: `type` (`injury`, `equipment_fault`, `gas_smell`, `need_help`, `sos`), `severity` (`low`, `medium`, `high`, `critical`), `tunnel_id`, `description`. `type='sos'` forces `critical`. Rate limited to 20/hr (429 with `Retry-After`). Extra fields forbidden (422). Records audit (`report.create`). | `WorkerReportView` | `201`, `400`, `401`, `404`, `422`, `429` |
+| `GET` | `/api/reports` | Any Authenticated User | Query: `status` (`open`, `acknowledged`, `resolved`), `type`, `mine_id`, `tunnel_id`, `limit` (default 100, max 500), `offset`. Superiors get `SuperiorReportView` (telemetry, actor names, node/gateway, repeat count); workers get `WorkerReportView` (sensitive metadata strictly omitted, own reports only). Gateway MAC never returned. | List of `SuperiorReportView` or `WorkerReportView` | `200`, `401`, `404`, `422` |
+| `PATCH` | `/api/reports/{id}` | Superiors Only (Manager, Safety Officer, Engineer; others 403) | JSON: `status` (`acknowledged`, `resolved`), `resolution_note` (max 500 chars). Row locked FOR UPDATE. Direct `open -> resolved` records both. Backwards/repeated transitions return 409 `{"code": "invalid_transition"}`. Records audit (`report.acknowledge`, `report.resolve`). | `SuperiorReportView` | `200`, `400`, `401`, `403`, `404`, `409`, `422` |
 | `GET` | `/` | Browser | None | HTML dashboard (`index.html`) | `200` |
 
 ### Planned Routes (Future Steps)
 - `GET /api/mines/{id}/profile` (*Planned - Step 9*)
-- `POST /api/nodes/{id}/commands` (*Planned - Step 7*)
-- `POST /api/incidents` (*Planned - Step 7*)
-- `POST /api/worker-reports` (*Planned - Step 8*)
+- Outbound alert notification delivery and logging (*Planned - Step 10*)
 
 ---
 
@@ -787,7 +857,8 @@ Radio command sent by gateway over ESP-NOW:
 | **Step 6** | QR check-in and headcount | **Done** | Badges, scanner page, check events, check flags, headcount panel. Scanning in and out changes headcount; missed check-out raises flag. | 2026-11-22 |
 | **Step 6.5** | Hardening and Phase A Fixes | **Done** | Flag clearing state-lock, back-to-back shift chaining, headcount & flag Distinct ON constant-time optimization, badge 409 conflict handling, company isolation, and centralized UTC clock. | 2026-11-23 |
 | **Step 7** | Incidents and roll call | **Done** | Manual and auto emergency incidents, roll call snapshot, automatic gate-scan accounting, downlink node commands delivery over HTTPS ingest, sequence echoing ack, and siren keepalive refresh cycle. | 2026-11-23 |
-| **Step 8** | Worker reports and SOS | *Not started* | Report form, inbox, status flow, node SOS button and SOS packet. Report moves through workflow; button press shows as SOS report within seconds. | — |
+| **Step 7.5** | Hardening and Phase A Fixes | **Done** | Gateway-scoped node commands, siren reliability (extend pending, refresh acked > 30s), cross-tunnel scan-out roll call accounting in open incidents, auto-incident config & ingest matrix, incident row locking FOR UPDATE, uniform 409 body shape, command status superseded, 30-day command retention cleanup. | 2026-11-23 |
+| **Step 8** | Worker reports and SOS | **Done** | Report form, inbox, status flow, node SOS button and SOS packet. Report moves through workflow; button press shows as SOS report within seconds. | 2026-11-23 |
 | **Step 9** | Mine profile and output tracking | *Not started* | Profile fields, contacts, plan vs actual. Mine page shows all five profile groups. | — |
 | **Step 10** | Outbound notifications and extras | *Not started* | Telegram/WhatsApp outbound dispatch, PDF export, WebSocket updates. | — |
 
@@ -815,15 +886,107 @@ Radio command sent by gateway over ESP-NOW:
    Because gateway firmware packets without nodes are not implemented in the frozen firmware struct, a gateway's `last_seen_at` reflects the arrival of its latest forwarded node packet. On quiet tunnels with no active placed nodes transmitting, a gateway could be marked offline unless periodic node transmissions occur or firmware sends status packets.
 
 ### 11.1. Firmware TODO (Owner)
-The following firmware features from Step 4 require modifying packet types or fields, which are frozen by design in this repository:
+The following firmware features from Step 4 and Step 8 require modifying packet types or fields, which are frozen by design in this repository:
 - **Node Heartbeat Timing**: Keep node transmission interval <= 10s (or <= 30s) so the offline threshold has at least 3 missed packets margin.
 - **Gateway Heartbeats**: ESP32 gateway must transmit a periodic keepalive status packet over HTTP even when no child nodes are transmitting, preventing false gateway-offline timeouts on idle tunnels.
 - **ESP Task Watchdog & Sensor-Fault Flag**: Requires additional bit flags in the node telemetry packet payload.
 - **X-Gateway-Key Header**: Ensure physical ESP32 gateway firmware transmits the secret provisioned `X-Gateway-Key` HTTP header with all payload ingest requests.
+- **Node Physical SOS Button**: Hardware should require a 2s press-and-hold to prevent accidental trigger shock false alarms.
+- **Transmission Bursts**: Node should transmit a burst of 3 packets 100ms apart upon SOS button trigger, and continue transmitting telemetry with `sos_active=1` bit set until hardware reset or timeout.
+- **Gateway Retry Contract**: On HTTP 503 responses to SOS packets (`{"detail": "SOS handling failed"}`), gateway should retry posting the SOS packet after the specified `Retry-After` interval (2s) without dropping sensor readings.
+- **SOS_ACK Out of Scope**: Downlink radio acknowledgment (`SOS_ACK`) back to the node is out of scope (requires firmware modification and new radio packet definitions).
+
+### 11.2. Device SOS Path, Privacy, and Ingest Retries (Step 8)
+- **End-to-End Device SOS Path**:
+  - Telemetry packet arrives with `sos_active = 1` -> handled in `services/sos_service.py` -> 60s merge window per node (`SOS_MERGE_WINDOW_S`) updates `last_signal_at` and increments `repeat_count` without opening duplicate reports.
+  - **Flood Guard**: Caps new reports at `SOS_MAX_NEW_PER_HOUR` (default 6) per node per hour; bursts beyond this merge into the latest report with a rate-limited WARNING log.
+  - **Placed vs Unplaced Nodes**: An unplaced node creates a device SOS report naming the node and gateway in its description without opening an incident (no tunnel exists). A placed node atomically checks for an existing open SOS incident on that tunnel (protected by partial unique index `uq_incidents_open_sos`) or opens a Level 3 (CRITICAL) SOS incident with an immediate evacuation roll-call snapshot, linking `WorkerReport.incident_id`.
+  - **Emergency Banner**: A persistent 3-second polled red SOS banner (`#sosAlertBanner`) in the superior dashboard links directly to the roll call and reports inbox, and remains active until a superior acknowledges or resolves the report.
+- **503-Then-Retry Gateway Ingest Contract**:
+  - The node sensor reading is **always** committed to the database first.
+  - If downstream SOS report or incident creation fails due to a database error or transient condition, the reading remains committed, the error is logged with `exc_info=True`, and the endpoint returns HTTP 503 `{"detail": "SOS handling failed"}` with `Retry-After: 2` header, instructing the ESP32 gateway to retry forwarding the SOS packet.
+- **Privacy Rules & Information Isolation**:
+  - **Worker View (`WorkerReportView`)**: Minors and foremen see only reports they personally filed (`user_id == current_user.id`), with sensitive metadata (`source`, `user_id`, `node_id`, `node_number`, `gateway_name`, `reporter`, `repeat_count`) strictly omitted.
+  - **Superior View (`SuperiorReportView`)**: Superiors see all reports across their assigned mines with telemetry context and full actor attribution.
+  - **Gateway MAC Confidentiality**: Physical gateway MAC addresses are internal backhaul identifiers and are never exposed in any report API response.
+  - **Audit Privacy**: Audit logs (`report.create`, `report.acknowledge`, `report.resolve`, `sos.device`) record entity IDs and timestamps only, strictly omitting free-text descriptions and resolution notes.
 
 ---
 
 ## 12. Changelog
+
+### 2026-11-23 - Step 8: Worker Reports and Device SOS Path (Phase B)
+- **Database Migration (`5d042c33b47c`)**:
+  - Created `worker_reports` table with `id` (bigserial PK), `mine_id` (FK mines CASCADE), `tunnel_id` (FK tunnels RESTRICT, nullable), `user_id` (FK users SET NULL, nullable), `node_id` (FK nodes SET NULL, nullable), `source` (`CHECK IN ('worker', 'device')`), `type` (`CHECK IN ('injury', 'equipment_fault', 'gas_smell', 'need_help', 'sos')`), `severity` (`CHECK IN ('low', 'medium', 'high', 'critical')`), `description` (varchar(1000)), `status` (`CHECK IN ('open', 'acknowledged', 'resolved')`, default `'open'`), `created_at` (timestamptz default now()), `last_signal_at` (timestamptz default now()), `repeat_count` (integer default 1, CHECK >= 1), `acknowledged_by` (FK users SET NULL), `acknowledged_at` (timestamptz), `resolved_by` (FK users SET NULL), `resolved_at` (timestamptz), `resolution_note` (varchar(500)), `incident_id` (FK incidents SET NULL).
+  - Enforced source shape constraint `ck_reports_source_shape`: `worker` source requires `user_id IS NOT NULL` and `node_id IS NULL`; `device` source requires `user_id IS NULL` and `node_id IS NOT NULL`.
+  - Enforced status lifecycle constraints `ck_reports_status_fields` ensuring acknowledged and resolved records carry their respective actor and timestamp.
+  - Enforced `ck_reports_sos_critical`: reports of type `sos` strictly require `severity = 'critical'`.
+  - Added partial UNIQUE index `uq_incidents_open_sos` on `incidents(tunnel_id) WHERE status = 'open' AND source = 'sos'` (strictly at most one open SOS incident per tunnel).
+  - Added compound indexes: `ix_worker_reports_mine_status_created` on `(mine_id, status, created_at DESC)`, `ix_worker_reports_user_created` on `(user_id, created_at DESC)`, and `ix_worker_reports_node_signal` on `(node_id, last_signal_at DESC)`.
+  - Verified bidirectional migration integrity with `alembic downgrade -1` and `alembic upgrade head`, and confirmed zero schema drift with `alembic check`.
+- **Worker Reports Domain Service (`services/report_service.py`)**:
+  - `create_worker_report`: Validates permitted mine/tunnel scope, forces severity `critical` for `type='sos'`, enforces sliding in-memory rate limit (20 reports/hour per user returning HTTP 429 with `Retry-After`). Records atomic audit `report.create` strictly omitting description text.
+  - `acknowledge_report`: Locks report row (`SELECT ... FOR UPDATE`), transitions `open -> acknowledged`, records actor and timestamp, logs audit `report.acknowledge`.
+  - `resolve_report`: Locks report row (`SELECT ... FOR UPDATE`), transitions `open|acknowledged -> resolved` (recording acknowledgement automatically if resolving directly from open), records note (max 500 chars), logs audit `report.resolve` strictly omitting note text.
+  - Rejects backwards or repeated transitions with HTTP 409 `{"code": "invalid_transition"}`.
+- **Device SOS Ingest & Merging Service (`services/sos_service.py`)**:
+  - Triggered in `services/ingest_service.py` whenever telemetry packet carries `sos_active == 1` (even for deduplicated telemetry packets).
+  - Concurrency serialization via node row lock (`SELECT ... FOR UPDATE on nodes`).
+  - 60-second merge window (`SOS_MERGE_WINDOW_S`): Packets from the same node within 60s increment `repeat_count` and refresh `last_signal_at` without duplicating report rows.
+  - Hourly flood guard (`SOS_MAX_NEW_PER_HOUR=6`): Caps new reports at 6 per node per hour; subsequent packets merge into the latest report with a rate-limited WARNING log.
+  - Placed nodes open an SOS incident with immediate roll call snapshot (linking `WorkerReport.incident_id`), respecting `SOS_INCIDENT_SIREN` (default false).
+  - Unplaced nodes create device reports without incidents, recording gateway name and node number in description.
+  - HTTP 503 retry contract: Sensor reading is always committed; if SOS handling raises an exception, commits reading, logs traceback with `exc_info=True`, and returns HTTP 503 `{"detail": "SOS handling failed"}` with `Retry-After: 2`.
+- **REST Endpoints & Access Control (`routers/reports.py`)**:
+  - `POST /api/reports`: Any authenticated user; rate limited; returns `WorkerReportView`.
+  - `GET /api/reports`: Filter by `status`, `type`, `mine_id`, `tunnel_id`, `limit` (default 100, max 500), `offset`. Superiors receive `SuperiorReportView` (full telemetry, actors, repeat counts); workers receive `WorkerReportView` (own reports only, stripped of sensitive fields). Gateway MAC address is never returned.
+  - `PATCH /api/reports/{id}`: Superiors only; transition status; returns `SuperiorReportView`.
+  - Synchronized `POLICY_TABLE` across all 3 routes in `tests/test_auth_and_roles.py`.
+- **Simulator & Hardware SOS Tooling (`dev/simulator.py`)**:
+  - Added `--sos` CLI argument to `app.dev.simulator` allowing on-demand simulation of physical node SOS button presses.
+  - Implemented `send_sos()` function transmitting telemetry packets with `sos_active = 1`.
+- **Frontend Dashboard Integration (`static/reports.js`, `index.html`)**:
+  - Added Worker Reporting Modal: Hazard type dropdown, tunnel selector, description input, prominent red SOS button with confirm dialog, and "My reports" table with status badges.
+  - Added Superior Reports Inbox: Status and type filters, acknowledge and resolve actions with resolution note modal, device SOS metadata (node number, gateway name, tunnel, repeat count), and roll call links for SOS incidents.
+  - Added Persistent Red SOS Banner (`#sosAlertBanner`): Polled every 3 seconds, loudly alerts superiors to open SOS reports across their mines until acknowledged or resolved.
+- **Automated Verification**:
+  - Added `tests/test_step8_reports_and_sos.py` with 10 comprehensive tests covering worker report creation & scoping, worker-safe view vs superior view field leakage, rate limiting (21st in 1h -> 429), status transitions & RBAC, database check constraints reject invalid rows, device SOS ingest flow (placed vs unplaced, burst merge, merge window, flood guard, deduped reading SOS trigger, 503-then-retry contract, MAC confidentiality), device SOS concurrency serialization via row lock, simulator SOS packet verification, Done-When full lifecycle journey with frozen clock, and Alembic downgrade/upgrade roundtrip.
+  - Full test suite: **141 passed in pytest (0 failures)**.
+  - `alembic check` clean with zero schema drift.
+
+### 2026-11-23 - Step 7.5: Hardening (Phase A)
+- **Security & Gateway-Scoped Node Commands (A1)**:
+  - Scoped node commands strictly through node backhaul gateway (`node -> gateway -> gateway.mine -> mine.company_id` and `gateway.mine_id in allowed_mines`).
+  - Access attempts on out-of-scope nodes return HTTP 404 identical to not found for both placed and unplaced nodes across POST and GET.
+  - `POST /api/nodes/{id}/commands` requires node to be placed (`is_placed(node)`) and its gateway active (`gateway.active`), otherwise returning HTTP 404 `{"detail": "Node not found"}`. GET `/api/nodes/{id}/commands` requires company scope only.
+- **Siren Reliability & Retention Purge (A2)**:
+  - Updated `SIREN_REFRESH_S` default to 30 (validated $5 \le \text{value} \le 40$).
+  - Watchdog runner executes siren keepalive job every `min(10, SIREN_REFRESH_S / 3)` seconds, decoupled from `WATCHDOG_INTERVAL_S`.
+  - In `services/siren_service.py`: `run_siren_cycle` extends `expires_at` for pending (unacked, unexpired) `buzzer_on` commands instead of duplicating rows; creates a new command with new sequence number only when the previous command was acked and older than `SIREN_REFRESH_S`.
+  - Nodes manually silenced via `buzzer_off` after the incident's last siren-on event are skipped by the keepalive cycle until the incident siren is toggled on again.
+  - Retention purge: watchdog background cycle deletes node commands that are acked or expired and older than `COMMAND_RETENTION_DAYS` (default 30 days).
+- **Cross-Tunnel Scan-Out Roll Call Accounting (A3)**:
+  - Created `services/roll_call_service.py` to house evacuation roll-call functions and maintain file size compliance under ~300 lines.
+  - Gate check-out (`direction = 'out'`) accounts the worker in every open incident of the company whose roster contains them, regardless of the tunnel where the scan occurred.
+  - Scanner path writes zero audit rows (manual supervisor accounting via `/account` retains `incident.account` audit logging).
+- **Auto-Incident Ingest Matrix & Failure Isolation (A4, A5)**:
+  - Added `AUTO_INCIDENT_SIREN` configuration setting (default `true`) allowing operational disabling of automatic sirens on critical sensor readings.
+  - Telemetry ingest matrix verified: level $0 \to 3$ critical transition on placed node opens exactly one auto incident; repeated critical packet skips duplicate opening; warning level 2 opens none; unplaced node critical reading opens none.
+  - Failures in auto-incident creation log tracebacks with `exc_info=True` and never disrupt the HTTP 200 telemetry ingest response or reading persistence.
+  - Unkeyed ingest (`ALLOW_UNKEYED_INGEST=true`) strictly returns an empty HTTP body `""`, withholding downlink command lines.
+- **Incident API Hardening & Normalized 409 Error Shapes (A6)**:
+  - Attempted roll call accounting on a closed incident returns HTTP 409 `{"code": "incident_closed", "detail": "Cannot account personnel on closed incident"}`.
+  - `PATCH /api/incidents/{id}` and roster accounting lock incident rows (`SELECT ... FOR UPDATE OF incidents`) to serialize concurrent mutations.
+  - Added `limit` (default 100, max 500) and `offset` pagination to `GET /api/incidents`.
+  - Added `late_arrival` (`added_at > incident.opened_at`) boolean field to `IncidentRosterItem`.
+  - Normalized all 409 error response bodies to have `code`, `detail`, and optional metadata (`count`) at the top level.
+- **Command Status Lifecycle (A7)**:
+  - `POST /api/nodes/{id}/commands` returns `"status": "pending"`.
+  - `GET /api/nodes/{id}/commands` computes `"superseded"` when a command is unacked and its `expires_at` is earlier than `created_at + COMMAND_TTL_S`.
+- **Automated Verification (A8)**:
+  - Added comprehensive test suite in `tests/test_step7_hardening.py` covering gateway scoping, unplaced dispatch rejection, inactive gateway handling, runner session persistence, manual silencing immunity, pending expiration extension, 30-day watchdog retention, cross-tunnel roll-call accounting, auto-incident matrix, closed incident conflict, `X-Forwarded-Proto` trust, unkeyed command withholding, gateway command isolation, and invalid seq acknowledgment.
+  - Full test suite: **131 passed in pytest (0 failures)**.
+  - `alembic check` clean with zero schema drift.
 
 ### 2026-11-23 - Step 7: Emergency Incidents, Roll Call Snapshot, Downlink Node Commands, and Siren Keepalive
 - **Database Migration (`a69df82fa18b`)**:

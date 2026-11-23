@@ -118,14 +118,35 @@ if SCAN_RATE_PER_MIN <= 0:
 
 # Step 7: Incidents, Roll Call, Node Commands, and Siren Configuration
 COMMAND_TTL_S: int = int(os.getenv("COMMAND_TTL_S", "120"))
-SIREN_REFRESH_S: int = int(os.getenv("SIREN_REFRESH_S", "45"))
+SIREN_REFRESH_S: int = int(os.getenv("SIREN_REFRESH_S", "30"))
 COMMANDS_REQUIRE_HTTPS: bool = os.getenv("COMMANDS_REQUIRE_HTTPS", "true").lower() in ("true", "1", "yes")
 TRUST_FORWARDED_PROTO: bool = os.getenv("TRUST_FORWARDED_PROTO", "false").lower() in ("true", "1", "yes")
+COMMAND_RETENTION_DAYS: int = int(os.getenv("COMMAND_RETENTION_DAYS", "30"))
+AUTO_INCIDENT_SIREN: bool = os.getenv("AUTO_INCIDENT_SIREN", "true").lower() in ("true", "1", "yes")
 
 if COMMAND_TTL_S <= 0:
     raise ValueError("COMMAND_TTL_S must be positive")
-if SIREN_REFRESH_S <= 0 or SIREN_REFRESH_S >= 60:
-    raise ValueError("SIREN_REFRESH_S must be positive and less than 60 (firmware safety timer)")
+if not (5 <= SIREN_REFRESH_S <= 40):
+    raise ValueError("SIREN_REFRESH_S must be between 5 and 40 seconds")
+if COMMAND_RETENTION_DAYS <= 0:
+    raise ValueError("COMMAND_RETENTION_DAYS must be positive")
+
+
+# Step 8: Worker Reports and Device SOS Configuration
+SOS_MERGE_WINDOW_S: int = int(os.getenv("SOS_MERGE_WINDOW_S", "60"))
+SOS_MAX_NEW_PER_HOUR: int = int(os.getenv("SOS_MAX_NEW_PER_HOUR", "6"))
+SOS_INCIDENT_SIREN: bool = os.getenv("SOS_INCIDENT_SIREN", "false").lower() in ("true", "1", "yes")
+REPORT_RATE_PER_HOUR: int = int(os.getenv("REPORT_RATE_PER_HOUR", "20"))
+REPORT_MAX_AGE_DAYS_WORKER_VIEW: int = int(os.getenv("REPORT_MAX_AGE_DAYS_WORKER_VIEW", "90"))
+
+if SOS_MERGE_WINDOW_S <= 0:
+    raise ValueError("SOS_MERGE_WINDOW_S must be positive")
+if SOS_MAX_NEW_PER_HOUR <= 0:
+    raise ValueError("SOS_MAX_NEW_PER_HOUR must be positive")
+if REPORT_RATE_PER_HOUR <= 0:
+    raise ValueError("REPORT_RATE_PER_HOUR must be positive")
+if REPORT_MAX_AGE_DAYS_WORKER_VIEW <= 0:
+    raise ValueError("REPORT_MAX_AGE_DAYS_WORKER_VIEW must be positive")
 
 
 def validate_jwt_secret() -> None:

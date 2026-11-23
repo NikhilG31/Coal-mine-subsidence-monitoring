@@ -88,7 +88,9 @@ def create_command(
 
     # 5. Record audit action
     company_id = 0
-    if node.tunnel and node.tunnel.mine:
+    if node.gateway and node.gateway.mine:
+        company_id = node.gateway.mine.company_id
+    elif node.tunnel and node.tunnel.mine:
         company_id = node.tunnel.mine.company_id
     elif actor and actor.company_id:
         company_id = actor.company_id

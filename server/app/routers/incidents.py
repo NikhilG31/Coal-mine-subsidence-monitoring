@@ -6,6 +6,7 @@ Must NOT execute raw telemetry mutations or define database table schemas.
 import datetime
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
@@ -152,10 +153,12 @@ def create_incident(
 def list_incidents(
     status_filter: str = Query("open", alias="status", pattern="^(open|all)$"),
     mine_id: Optional[int] = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     current_user: User = Depends(require_role(*SUPERIOR_ROLES, ROLE_FOREMAN)),
     db: Session = Depends(get_db),
 ):
-    """Lists incidents filtered by status and mine, scoped by role."""
+    """Lists incidents filtered by status and mine, scoped by role (with limit and offset)."""
     now = clock.utcnow()
     allowed_mines = get_allowed_mine_ids(db, current_user)
 
@@ -188,7 +191,7 @@ def list_incidents(
             return IncidentsListResponse(incidents=[])
         query = query.filter(Incident.tunnel_id == current_tunnel_id)
 
-    incidents = query.order_by(Incident.opened_at.desc()).all()
+    incidents = query.order_by(Incident.opened_at.desc()).offset(offset).limit(limit).all()
     if not incidents:
         return IncidentsListResponse(incidents=[])
 
@@ -275,6 +278,7 @@ def get_incident_roster(
                 added_at=r.added_at.astimezone(datetime.timezone.utc).isoformat(),
                 accounted_at=r.accounted_at.astimezone(datetime.timezone.utc).isoformat() if r.accounted_at else None,
                 accounted_by_name=r.accounted_user.full_name if r.accounted_user else None,
+                late_arrival=bool(r.added_at > inc.opened_at),
             )
         )
 
@@ -288,9 +292,14 @@ def account_worker(
     current_user: User = Depends(require_role(*SUPERIOR_ROLES, ROLE_FOREMAN)),
     db: Session = Depends(get_db),
 ):
-    """Marks a worker accounted for in the incident roll call."""
+    """Marks a worker accounted for in the incident roll call (locks incident FOR UPDATE)."""
     now = clock.utcnow()
-    inc = db.query(Incident).options(joinedload(Incident.mine)).filter(Incident.id == id).first()
+    inc = (
+        db.query(Incident)
+        .filter(Incident.id == id)
+        .with_for_update(of=Incident)
+        .first()
+    )
     if not inc:
         raise HTTPException(status_code=404, detail="Incident not found")
 
@@ -301,7 +310,10 @@ def account_worker(
         db.commit()
     except IncidentError as exc:
         db.rollback()
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+        content = {"detail": exc.detail}
+        if exc.code:
+            content["code"] = exc.code
+        return JSONResponse(status_code=exc.status_code, content=content)
 
     return {
         "ok": True,
@@ -318,17 +330,12 @@ def update_incident(
     current_user: User = Depends(require_role(*SUPERIOR_ROLES)),
     db: Session = Depends(get_db),
 ):
-    """Superiors only: closes an incident or modifies siren state."""
+    """Superiors only: closes an incident or modifies siren state (locks incident FOR UPDATE)."""
     now = clock.utcnow()
     inc = (
         db.query(Incident)
-        .options(
-            joinedload(Incident.mine),
-            joinedload(Incident.tunnel),
-            joinedload(Incident.opener),
-            joinedload(Incident.closer),
-        )
         .filter(Incident.id == id)
+        .with_for_update(of=Incident)
         .first()
     )
     if not inc:
@@ -354,12 +361,15 @@ def update_incident(
         db.refresh(inc)
     except IncidentConflictError as exc:
         db.rollback()
-        raise HTTPException(
+        return JSONResponse(
             status_code=409,
-            detail={"code": exc.code, "count": exc.count, "message": exc.detail},
+            content={"code": exc.code, "detail": exc.detail, "count": exc.count},
         )
     except IncidentError as exc:
         db.rollback()
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+        content = {"detail": exc.detail}
+        if exc.code:
+            content["code"] = exc.code
+        return JSONResponse(status_code=exc.status_code, content=content)
 
     return _serialize_incident(db, inc)

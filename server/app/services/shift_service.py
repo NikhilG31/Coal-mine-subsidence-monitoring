@@ -5,7 +5,7 @@ Must NOT handle HTTP requests, import FastAPI components, or manipulate UI views
 """
 import datetime
 from typing import Any, Dict, List, Optional, Tuple
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, joinedload
 
 from app.config import MAX_SHIFT_HOURS
@@ -147,9 +147,9 @@ def create_shift(
         with db.begin_nested():
             db.add(assignment)
             db.flush()
-    except IntegrityError as exc:
+    except (IntegrityError, OperationalError) as exc:
         sqlstate = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
-        if sqlstate != "23P01":
+        if sqlstate not in ("23P01", "40P01"):
             raise ShiftError("Database integrity violation", status_code=400) from exc
 
         # Find the clashing shift from the concurrent insert
@@ -163,11 +163,8 @@ def create_shift(
             )
             .first()
         )
-        if not clash:
-            raise ShiftError("Database integrity violation", status_code=400) from exc
-
         raise ShiftOverlapError(
-            clashing_shift=_format_clashing_shift(clash, allowed_mine_ids)
+            clashing_shift=_format_clashing_shift(clash, allowed_mine_ids) if clash else None
         ) from exc
 
     # 6. Audit record in same transaction

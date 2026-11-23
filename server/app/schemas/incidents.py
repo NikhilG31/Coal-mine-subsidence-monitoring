@@ -38,6 +38,7 @@ class IncidentRosterItem(BaseModel):
     added_at: str
     accounted_at: Optional[str] = None
     accounted_by_name: Optional[str] = None
+    late_arrival: bool = False
 
 
 class IncidentDetailResponse(BaseModel):

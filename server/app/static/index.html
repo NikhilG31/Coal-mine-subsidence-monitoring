@@ -44,6 +44,7 @@
         <button id="btnGateScanner" class="neo-btn btn-small" style="display:none;" onclick="openGateScannerModal()">📷 Gate Scanner</button>
         <button id="btnHeadcount" class="neo-btn btn-small" style="display:none;" onclick="openHeadcountModal()">👥 Headcount &amp; Flags</button>
         <button id="btnIncidents" class="neo-btn btn-small" style="display:none;" onclick="openIncidentsModal()">🚨 Incidents &amp; Roll Call</button>
+        <button id="btnReports" class="neo-btn btn-small" style="display:none;" onclick="openReportsModal()">📋 Reports &amp; SOS</button>
         <button id="btnMyHours" class="neo-btn btn-small" style="display:none;" onclick="openMyHoursModal()">⏱️ My Hours</button>
         <button id="btnManageMines" class="neo-btn btn-small" onclick="openMinesModal()">⛏️ Mines &amp; Gateways</button>
         <button id="btnAddUser" class="neo-btn btn-small" onclick="openAddUserModal()">+ Add User</button>
@@ -67,6 +68,22 @@
         <a id="btnDownloadAllExcel" href="/api/export.xlsx" class="neo-btn btn-small btn-primary" style="text-decoration:none;">
           📥 Download Full Excel Log (.xlsx)
         </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Real-Time Device SOS Alert Banner (Persistent Red Banner, polled 3s) -->
+  <div id="sosAlertBanner" style="display:none; background:#ff0033; color:#fff; border-bottom:4px solid #000; padding:12px 18px; font-weight:800; font-size:14px; box-shadow:0 4px 0 #000; z-index:9999;">
+    <div style="max-width:1400px; margin:0 auto; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+      <div id="sosBannerContent" style="display:flex; align-items:center; gap:12px;">
+        <span style="font-size:24px;">🆘</span>
+        <div>
+          <div style="font-family:var(--condensed); font-size:16px; letter-spacing:0.5px;">CRITICAL SOS SIGNAL DETECTED</div>
+          <div id="sosBannerText" style="font-size:13px; font-weight:500;">Node #-- (Tunnel --) • 0s ago</div>
+        </div>
+      </div>
+      <div style="display:flex; gap:10px; align-items:center;">
+        <button class="neo-btn btn-small btn-gold" onclick="openReportsModal()">📋 View Reports &amp; SOS</button>
       </div>
     </div>
   </div>
@@ -848,6 +865,7 @@
   <script src="/static/checkin.js"></script>
   <script src="/static/headcount_flags.js"></script>
   <script src="/static/incidents.js"></script>
+  <script src="/static/reports.js"></script>
 
   <!-- Modal: Worker QR Badge (Printable) -->
   <div id="badgeModal" class="modal-overlay">
@@ -1075,6 +1093,117 @@
             <button type="submit" class="neo-btn btn-danger">Confirm &amp; Close Incident</button>
           </div>
         </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Worker Reports & SOS Console -->
+  <div id="reportsModal" class="modal-overlay">
+    <div class="modal-window" style="max-width:850px; width:95%;">
+      <div class="modal-header">
+        <h3>📋 REPORTS &amp; EMERGENCY SOS</h3>
+        <button class="neo-btn btn-small" onclick="closeReportsModal()">✖</button>
+      </div>
+      <div class="modal-body" style="padding:16px;">
+        <!-- Worker View Section -->
+        <div id="workerReportsSection" style="display:none;">
+          <!-- SOS Emergency Button -->
+          <div style="background:#ffebee; border:2px solid #ff1744; padding:16px; margin-bottom:16px; text-align:center;">
+            <div style="font-family:var(--condensed); font-size:18px; color:#d50000; font-weight:700; margin-bottom:6px;">EMERGENCY SOS ALERT</div>
+            <p style="font-size:12px; color:#555; margin-bottom:12px;">Pressing this button broadcasts a high-priority distress signal immediately to all safety superiors and operations managers.</p>
+            <button id="btnWorkerSos" class="neo-btn btn-danger" style="font-size:16px; padding:12px 24px; background:#d50000 !important;" onclick="handleWorkerSosClick()">
+              🆘 EMERGENCY SOS (DISTRESS)
+            </button>
+          </div>
+
+          <!-- Report a Problem Form -->
+          <div class="zine-box" style="margin-bottom:16px; padding:14px;">
+            <h4 style="font-family:var(--condensed); margin-bottom:10px;">REPORT A PROBLEM / HAZARD</h4>
+            <div style="font-size:11px; color:#b71c1c; background:#ffebee; padding:6px 10px; margin-bottom:12px; border:1px solid #ffcdd2;">
+              ℹ️ A device SOS only reaches people within range of a node
+            </div>
+            <form id="workerReportForm" onsubmit="handleWorkerReportSubmit(event)">
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;">
+                <div class="form-group">
+                  <label style="font-size:11px;">Problem Type:</label>
+                  <select id="workerReportType" class="form-input" required>
+                    <option value="injury">Injury</option>
+                    <option value="equipment_fault">Equipment Fault</option>
+                    <option value="gas_smell">Gas Smell</option>
+                    <option value="need_help">Need Help</option>
+                    <option value="sos">SOS (Distress)</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label style="font-size:11px;">Severity:</label>
+                  <select id="workerReportSeverity" class="form-input" required>
+                    <option value="low">Low</option>
+                    <option value="medium" selected>Medium</option>
+                    <option value="high">High</option>
+                    <option value="critical">Critical</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-group" style="margin-bottom:10px;">
+                <label style="font-size:11px;">Tunnel / Location:</label>
+                <select id="workerReportTunnel" class="form-input">
+                  <option value="">(No specific tunnel)</option>
+                </select>
+              </div>
+              <div class="form-group" style="margin-bottom:10px;">
+                <label style="font-size:11px;">Description / Note (Optional, max 1000 chars):</label>
+                <textarea id="workerReportDescription" class="form-input" rows="3" maxlength="1000" placeholder="Provide details on the issue, exact position, or personnel affected..."></textarea>
+              </div>
+              <div style="display:flex; justify-content:flex-end;">
+                <button type="submit" class="neo-btn btn-primary">Submit Report</button>
+              </div>
+            </form>
+          </div>
+
+          <!-- My Reports List -->
+          <div class="zine-box" style="padding:14px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+              <h4 style="font-family:var(--condensed); margin:0;">MY SUBMITTED REPORTS</h4>
+              <button class="neo-btn btn-small" onclick="loadMyReports()">Refresh</button>
+            </div>
+            <div id="myReportsContainer" class="table-responsive">
+              <div style="color:var(--ink-3); font-size:12px;">Loading reports...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Superior View Section -->
+        <div id="superiorReportsSection" style="display:none;">
+          <!-- Filter Controls -->
+          <div style="display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap; background:#fff; border:2px solid var(--ink); padding:10px;">
+            <div class="form-group" style="margin:0; display:flex; align-items:center; gap:6px;">
+              <label style="font-size:11px; font-weight:700;">Status:</label>
+              <select id="superiorFilterStatus" class="form-input" style="padding:4px 8px;" onchange="loadSuperiorReports()">
+                <option value="">All Statuses</option>
+                <option value="open">Open</option>
+                <option value="acknowledged">Acknowledged</option>
+                <option value="resolved">Resolved</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin:0; display:flex; align-items:center; gap:6px;">
+              <label style="font-size:11px; font-weight:700;">Type:</label>
+              <select id="superiorFilterType" class="form-input" style="padding:4px 8px;" onchange="loadSuperiorReports()">
+                <option value="">All Types</option>
+                <option value="sos">SOS</option>
+                <option value="injury">Injury</option>
+                <option value="equipment_fault">Equipment Fault</option>
+                <option value="gas_smell">Gas Smell</option>
+                <option value="need_help">Need Help</option>
+              </select>
+            </div>
+            <button class="neo-btn btn-small" onclick="loadSuperiorReports()">Refresh Inbox</button>
+          </div>
+
+          <!-- Superior Reports Inbox Table -->
+          <div id="superiorReportsContainer" class="table-responsive" style="max-height:500px; overflow-y:auto;">
+            <div style="color:var(--ink-3); font-size:12px;">Loading reports inbox...</div>
+          </div>
+        </div>
       </div>
     </div>
   </div>

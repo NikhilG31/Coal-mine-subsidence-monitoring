@@ -52,6 +52,7 @@ from app.routers import (
     nodes,
     notifications,
     placements,
+    reports,
     users,
     workers,
 )
@@ -116,6 +117,7 @@ app.include_router(checkins.router)
 app.include_router(check_flags.router)
 app.include_router(incidents.router)
 app.include_router(node_commands.router)
+app.include_router(reports.router)
 app.include_router(me.router)
 
 

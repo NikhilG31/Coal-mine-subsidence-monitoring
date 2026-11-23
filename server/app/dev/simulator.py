@@ -232,16 +232,103 @@ class Simulator:
                     pass
         return sent_count
 
+    def send_sos(self, node_id: int = 1) -> int:
+        """Sends a burst of 3 SOS packets 100 ms apart, then next regular packet with sos_active=1."""
+        sent = 0
+        gw = DEMO_GATEWAYS[0]
+        gw_mac = norm_mac(gw["mac"])
+        target_node = next((n for n in gw["nodes"] if n["id"] == node_id), gw["nodes"][0])
+
+        bx, by = target_node["baseline_tilt"]
+        bv = target_node["baseline_vib"]
+        danger_level = classify_hazard(bx, by, bv)
+
+        # Burst of 3 SOS packets 100 ms apart
+        for _ in range(3):
+            self.counters[node_id] = self.counters.get(node_id, 0) + 1
+            cnt = self.counters[node_id]
+            pkt = pack_gateway_packet(
+                gateway_mac=gw_mac,
+                node_id=node_id,
+                counter=cnt,
+                tilt_x=bx,
+                tilt_y=by,
+                vib_rms=bv,
+                shock=False,
+                batt_v=target_node.get("batt_v", 4.0),
+                batt_pct=target_node.get("batt_pct", 90.0),
+                sos_active=True,
+                danger_level=danger_level,
+                fast_mode=True,
+                buzzer_on=False,
+                last_cmd_seq=0,
+            )
+            req = urllib.request.Request(
+                self.target_url,
+                data=pkt,
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "X-Gateway-Key": self.gateway_key,
+                },
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=2.0) as resp:
+                    if resp.status == 200:
+                        sent += 1
+            except Exception:
+                pass
+            time.sleep(0.1)
+
+        # Next regular packet with sos_active = 1
+        self.counters[node_id] = self.counters.get(node_id, 0) + 1
+        cnt = self.counters[node_id]
+        pkt = pack_gateway_packet(
+            gateway_mac=gw_mac,
+            node_id=node_id,
+            counter=cnt,
+            tilt_x=bx,
+            tilt_y=by,
+            vib_rms=bv,
+            shock=False,
+            batt_v=target_node.get("batt_v", 4.0),
+            batt_pct=target_node.get("batt_pct", 90.0),
+            sos_active=True,
+            danger_level=danger_level,
+            fast_mode=True,
+            buzzer_on=False,
+            last_cmd_seq=0,
+        )
+        req = urllib.request.Request(
+            self.target_url,
+            data=pkt,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "X-Gateway-Key": self.gateway_key,
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                if resp.status == 200:
+                    sent += 1
+        except Exception:
+            pass
+
+        return sent
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Standalone Telemetry Packet Simulator")
     parser.add_argument("--url", default="http://127.0.0.1:8000/api/ingest", help="Target ingest endpoint")
     parser.add_argument("--once", action="store_true", help="Send a single burst of telemetry packets")
+    parser.add_argument("--sos", action="store_true", help="Send 3 SOS burst packets 100ms apart plus follow-up SOS packet")
     parser.add_argument("--interval", type=float, default=5.0, help="Interval in seconds between simulation steps")
     args = parser.parse_args()
 
     sim = Simulator(target_url=args.url)
-    if args.once:
+    if args.sos:
+        count = sim.send_sos()
+        print(f"[simulator] Sent {count} SOS packets in burst.")
+    elif args.once:
         count = sim.step()
         print(f"[simulator] Sent {count} packets in single step.")
     else:

@@ -1,15 +1,15 @@
-"""Emergency incident and roll call management domain service.
+"""Emergency incident lifecycle and evacuation management domain service.
 
-Owns incident lifecycle, roster snapshotting, gate scan accounting, and evacuation control.
+Owns incident opening, closing, siren toggling, and auto-incident generation.
 Must NOT handle HTTP requests, import FastAPI components, or mutate raw sensor telemetry.
 """
 import datetime
 import logging
 from typing import Any, Dict, List, Optional
-from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
+from app.config import AUTO_INCIDENT_SIREN
 from app.models.gateway import Gateway
 from app.models.incident import Incident
 from app.models.incident_roster import IncidentRoster
@@ -23,17 +23,14 @@ from app.services import clock
 from app.services.headcount import inside_now
 from app.services.node_command_service import create_command
 from app.services.node_placement import PLACED_SQL_EXPRESSION, is_placed
+from app.services.roll_call_service import (
+    IncidentError,
+    add_late_arrival,
+    mark_accounted,
+    mark_accounted_on_exit,
+)
 
 logger = logging.getLogger(__name__)
-
-
-class IncidentError(Exception):
-    """Base exception for incident domain violations."""
-    def __init__(self, detail: str, status_code: int = 400, code: Optional[str] = None):
-        super().__init__(detail)
-        self.detail = detail
-        self.status_code = status_code
-        self.code = code
 
 
 class IncidentConflictError(IncidentError):
@@ -48,7 +45,7 @@ def get_affected_nodes(
     mine_id: int,
     tunnel_id: Optional[int] = None,
 ) -> List[Node]:
-    """B0: Returns placed nodes of that tunnel or mine whose gateway is active."""
+    """Returns placed nodes of that tunnel or mine whose gateway is active."""
     query = (
         db.query(Node)
         .join(Gateway, Node.gateway_id == Gateway.id)
@@ -77,10 +74,7 @@ def open_incident(
     source: str = "manual",
     now: Optional[datetime.datetime] = None,
 ) -> Incident:
-    """Opens a new emergency or manual evacuation incident.
-
-    Snapshots the inside worker roster, sets siren state, creates buzzer commands, and logs audit.
-    """
+    """Opens a new emergency or manual evacuation incident and snapshots inside roster."""
     if now is None:
         now = clock.utcnow()
 
@@ -138,7 +132,7 @@ def open_incident(
         )
     db.flush()
 
-    # 3. Audit incident.open (no title, worker name or PII in detail)
+    # 3. Audit incident.open
     record_audit(
         db=db,
         user=actor,
@@ -168,7 +162,7 @@ def auto_open_for_critical(
 ) -> Optional[Incident]:
     """Idempotently opens an auto incident when a placed node reaches CRITICAL (level 3).
 
-    B3: NEVER fails ingest. Wraps in savepoint and catches duplicate partial unique index race.
+    A4 & A5: Uses AUTO_INCIDENT_SIREN config and logs tracebacks on unexpected errors.
     """
     if not is_placed(node) or node.tunnel_id is None:
         return None
@@ -183,7 +177,6 @@ def auto_open_for_critical(
         return None
 
     try:
-        # Wrap in savepoint so any conflict or failure is fully isolated from ingest transaction
         with db.begin_nested():
             existing = (
                 db.query(Incident)
@@ -205,7 +198,7 @@ def auto_open_for_critical(
                 tunnel_id=node.tunnel_id,
                 title=title,
                 level=3,
-                siren=True,
+                siren=AUTO_INCIDENT_SIREN,
                 source="auto",
                 now=now,
             )
@@ -214,143 +207,8 @@ def auto_open_for_critical(
         logger.info("Auto-incident duplicate race suppressed for tunnel %d", node.tunnel_id)
         return None
     except Exception as exc:
-        logger.error("Failed to auto-open critical incident: %s", exc)
+        logger.error("Failed to auto-open critical incident: %s", exc, exc_info=True)
         return None
-
-
-def mark_accounted(
-    db: Session,
-    actor: Optional[User],
-    incident: Incident,
-    user_id: int,
-    now: Optional[datetime.datetime] = None,
-) -> IncidentRoster:
-    """Marks a single worker as accounted for in the incident roll call."""
-    if now is None:
-        now = clock.utcnow()
-
-    entry = (
-        db.query(IncidentRoster)
-        .filter(
-            IncidentRoster.incident_id == incident.id,
-            IncidentRoster.user_id == user_id,
-        )
-        .first()
-    )
-    if not entry:
-        raise IncidentError("Worker not found in incident roll call", status_code=404)
-
-    if entry.accounted_at is None:
-        entry.accounted_at = now
-        entry.accounted_by = actor.id if actor else None
-        db.flush()
-
-        record_audit(
-            db=db,
-            user=actor,
-            action="incident.account",
-            entity="incident",
-            entity_id=incident.id,
-            detail={"incident_id": incident.id, "user_id": user_id},
-            company_id=incident.mine.company_id if incident.mine else 0,
-        )
-
-    return entry
-
-
-def mark_accounted_on_exit(
-    db: Session,
-    scanner: Optional[User],
-    worker: User,
-    tunnel: Tunnel,
-    now: Optional[datetime.datetime] = None,
-) -> int:
-    """Marks a worker accounted in open incidents on gate OUT scan."""
-    if now is None:
-        now = clock.utcnow()
-
-    open_incidents = (
-        db.query(Incident)
-        .filter(
-            Incident.status == "open",
-            Incident.mine_id == tunnel.mine_id,
-            or_(Incident.tunnel_id == tunnel.id, Incident.tunnel_id.is_(None)),
-        )
-        .all()
-    )
-    count = 0
-    for inc in open_incidents:
-        entry = (
-            db.query(IncidentRoster)
-            .filter(
-                IncidentRoster.incident_id == inc.id,
-                IncidentRoster.user_id == worker.id,
-                IncidentRoster.accounted_at.is_(None),
-            )
-            .first()
-        )
-        if entry:
-            entry.accounted_at = now
-            entry.accounted_by = scanner.id if scanner else None
-            db.flush()
-
-            record_audit(
-                db=db,
-                user=scanner,
-                action="incident.account",
-                entity="incident",
-                entity_id=inc.id,
-                detail={"incident_id": inc.id, "user_id": worker.id},
-                company_id=tunnel.mine.company_id if tunnel.mine else 0,
-            )
-            count += 1
-
-    return count
-
-
-def add_late_arrival(
-    db: Session,
-    worker: User,
-    tunnel: Tunnel,
-    now: Optional[datetime.datetime] = None,
-) -> None:
-    """Adds a worker to open incident rosters as unaccounted on gate IN scan."""
-    if now is None:
-        now = clock.utcnow()
-
-    open_incidents = (
-        db.query(Incident)
-        .filter(
-            Incident.status == "open",
-            Incident.mine_id == tunnel.mine_id,
-            or_(Incident.tunnel_id == tunnel.id, Incident.tunnel_id.is_(None)),
-        )
-        .all()
-    )
-    for inc in open_incidents:
-        entry = (
-            db.query(IncidentRoster)
-            .filter(
-                IncidentRoster.incident_id == inc.id,
-                IncidentRoster.user_id == worker.id,
-            )
-            .first()
-        )
-        if not entry:
-            db.add(
-                IncidentRoster(
-                    incident_id=inc.id,
-                    user_id=worker.id,
-                    added_at=now,
-                    accounted_at=None,
-                    accounted_by=None,
-                )
-            )
-        elif entry.accounted_at is not None:
-            # If they previously left and now scanned back in, they are unaccounted again
-            entry.accounted_at = None
-            entry.accounted_by = None
-    db.flush()
 
 
 def close_incident(
@@ -361,8 +219,20 @@ def close_incident(
     confirm_unaccounted: bool = False,
     now: Optional[datetime.datetime] = None,
 ) -> Incident:
-    """Closes an open incident, turning off sirens and issuing buzzer_off commands."""
-    if incident.status == "closed":
+    """Closes an open incident, turning off sirens and issuing buzzer_off commands.
+
+    A6: Locks incident row FOR UPDATE.
+    """
+    locked_inc = (
+        db.query(Incident)
+        .filter(Incident.id == incident.id)
+        .with_for_update()
+        .first()
+    )
+    if not locked_inc:
+        raise IncidentError("Incident not found", status_code=404)
+
+    if locked_inc.status == "closed":
         raise IncidentError("Incident is already closed", status_code=409, code="already_closed")
 
     if now is None:
@@ -371,7 +241,7 @@ def close_incident(
     unaccounted_count = (
         db.query(IncidentRoster)
         .filter(
-            IncidentRoster.incident_id == incident.id,
+            IncidentRoster.incident_id == locked_inc.id,
             IncidentRoster.accounted_at.is_(None),
         )
         .count()
@@ -385,14 +255,14 @@ def close_incident(
             count=unaccounted_count,
         )
 
-    incident.status = "closed"
-    incident.closed_at = now
-    incident.closed_by = actor.id if actor else None
-    incident.close_note = close_note
-    incident.siren_active = False
+    locked_inc.status = "closed"
+    locked_inc.closed_at = now
+    locked_inc.closed_by = actor.id if actor else None
+    locked_inc.close_note = close_note
+    locked_inc.siren_active = False
 
     # Issue buzzer_off commands to all affected nodes
-    affected = get_affected_nodes(db, incident.mine_id, incident.tunnel_id)
+    affected = get_affected_nodes(db, locked_inc.mine_id, locked_inc.tunnel_id)
     for node in affected:
         create_command(db, actor, node, "buzzer_off", now=now)
 
@@ -403,16 +273,16 @@ def close_incident(
         user=actor,
         action="incident.close",
         entity="incident",
-        entity_id=incident.id,
+        entity_id=locked_inc.id,
         detail={
-            "incident_id": incident.id,
+            "incident_id": locked_inc.id,
             "unaccounted_count": unaccounted_count,
             "confirmed": bool(confirm_unaccounted),
         },
-        company_id=incident.mine.company_id if incident.mine else 0,
+        company_id=locked_inc.mine.company_id if locked_inc.mine else 0,
     )
 
-    return incident
+    return locked_inc
 
 
 def set_siren(
@@ -422,16 +292,28 @@ def set_siren(
     on: bool,
     now: Optional[datetime.datetime] = None,
 ) -> Incident:
-    """Toggles siren state for an open incident and creates buzzer commands."""
-    if incident.status == "closed":
+    """Toggles siren state for an open incident and creates buzzer commands.
+
+    A6: Locks incident row FOR UPDATE.
+    """
+    locked_inc = (
+        db.query(Incident)
+        .filter(Incident.id == incident.id)
+        .with_for_update()
+        .first()
+    )
+    if not locked_inc:
+        raise IncidentError("Incident not found", status_code=404)
+
+    if locked_inc.status == "closed":
         raise IncidentError("Cannot change siren on closed incident", status_code=409, code="incident_closed")
 
     if now is None:
         now = clock.utcnow()
 
-    incident.siren_active = on
+    locked_inc.siren_active = on
     cmd = "buzzer_on" if on else "buzzer_off"
-    affected = get_affected_nodes(db, incident.mine_id, incident.tunnel_id)
+    affected = get_affected_nodes(db, locked_inc.mine_id, locked_inc.tunnel_id)
     for node in affected:
         create_command(db, actor, node, cmd, now=now)
 
@@ -442,9 +324,9 @@ def set_siren(
         user=actor,
         action="incident.siren",
         entity="incident",
-        entity_id=incident.id,
-        detail={"incident_id": incident.id, "on": on},
-        company_id=incident.mine.company_id if incident.mine else 0,
+        entity_id=locked_inc.id,
+        detail={"incident_id": locked_inc.id, "on": on},
+        company_id=locked_inc.mine.company_id if locked_inc.mine else 0,
     )
 
-    return incident
+    return locked_inc

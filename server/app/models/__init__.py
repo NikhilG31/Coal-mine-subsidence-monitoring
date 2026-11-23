@@ -21,6 +21,7 @@ from app.models.check_flag import CheckFlag
 from app.models.incident import Incident
 from app.models.incident_roster import IncidentRoster
 from app.models.node_command import NodeCommand
+from app.models.worker_report import WorkerReport
 
 __all__ = [
     "Base",
@@ -43,4 +44,5 @@ __all__ = [
     "Incident",
     "IncidentRoster",
     "NodeCommand",
+    "WorkerReport",
 ]

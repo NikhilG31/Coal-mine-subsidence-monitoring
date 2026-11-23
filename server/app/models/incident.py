@@ -66,6 +66,12 @@ class Incident(Base):
             postgresql_where=text("status = 'open' AND source = 'auto'"),
         ),
         Index(
+            "uq_incidents_open_sos",
+            "tunnel_id",
+            unique=True,
+            postgresql_where=text("status = 'open' AND source = 'sos'"),
+        ),
+        Index(
             "ix_incidents_mine_id_opened_at",
             "mine_id",
             text("opened_at DESC"),

@@ -23,6 +23,7 @@ class NodeCommandResponse(BaseModel):
     cmd: str
     seq: int
     expires_at: str
+    status: str = "pending"
 
 
 class NodeCommandItem(BaseModel):
@@ -36,7 +37,7 @@ class NodeCommandItem(BaseModel):
     created_at: str
     expires_at: str
     acked_at: Optional[str] = None
-    status: str  # "pending" | "acked" | "expired"
+    status: str  # "pending" | "acked" | "expired" | "superseded"
 
 
 class NodeCommandsListResponse(BaseModel):

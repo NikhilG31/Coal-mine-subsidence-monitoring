@@ -4,6 +4,7 @@ Owns gateway resolution, node discovery, deduplication window checking, and read
 Must NOT handle HTTP requests, access request headers directly, or import FastAPI.
 """
 import datetime
+import logging
 from typing import Any, Dict, Tuple
 from sqlalchemy.orm import Session
 
@@ -16,6 +17,14 @@ from app.services.hazard_classifier import (
 )
 from app.services.incident_service import auto_open_for_critical
 from app.services.node_command_service import mark_acked
+from app.services.sos_service import handle_device_sos
+
+logger = logging.getLogger(__name__)
+
+
+class SOSHandlingError(Exception):
+    """Raised when device SOS handling fails during telemetry ingest."""
+    pass
 
 
 def process_telemetry_packet(
@@ -120,29 +129,40 @@ def process_telemetry_packet(
 
     if is_duplicate:
         db.commit()
-        return True, "duplicate_skipped", gateway.id
+        action_summary = "duplicate_skipped"
+    else:
+        # 6. Insert new reading row
+        reading = Reading(
+            node_id=node.id,
+            ts=reception_time,
+            boot_id=0,
+            counter=counter,
+            tilt_x=tilt_x,
+            tilt_y=tilt_y,
+            vib_rms=vib_rms,
+            shock=shock,
+            batt_v=batt_v,
+            batt_pct=batt_pct,
+            node_level=node_danger_level,
+            level=computed_level,
+        )
+        db.add(reading)
+        db.flush()
 
-    # 6. Insert new reading row
-    reading = Reading(
-        node_id=node.id,
-        ts=reception_time,
-        boot_id=0,
-        counter=counter,
-        tilt_x=tilt_x,
-        tilt_y=tilt_y,
-        vib_rms=vib_rms,
-        shock=shock,
-        batt_v=batt_v,
-        batt_pct=batt_pct,
-        node_level=node_danger_level,
-        level=computed_level,
-    )
-    db.add(reading)
-    db.flush()
+        # Step 7: Auto-open critical incident on transition to level 3 (CRITICAL)
+        auto_open_for_critical(db, node, reading, prev_level=prev_level, now=reception_time)
+        db.commit()
+        action_summary = "reading_inserted"
 
-    # Step 7: Auto-open critical incident on transition to level 3 (CRITICAL)
-    auto_open_for_critical(db, node, reading, prev_level=prev_level, now=reception_time)
+    # 7. Step 8: Device SOS handling (runs even for duplicate packets)
+    sos_active = bool(packet_data.get("sos_active", False))
+    if sos_active:
+        try:
+            handle_device_sos(db, node, gateway, now=reception_time)
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            logger.exception("SOS handling failed for node %d: %s", node.id, exc)
+            raise SOSHandlingError("SOS handling failed") from exc
 
-    db.commit()
-
-    return False, "reading_inserted", gateway.id
+    return is_duplicate, action_summary, gateway.id

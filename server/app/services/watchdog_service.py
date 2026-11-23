@@ -12,9 +12,11 @@ from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
+from app.config import COMMAND_RETENTION_DAYS
 from app.models.alert import Alert
 from app.models.gateway import Gateway
 from app.models.node import Node
+from app.models.node_command import NodeCommand
 from app.services.connectivity import gateway_is_online, node_is_online
 from app.services.node_placement import is_placed
 
@@ -208,6 +210,26 @@ def run_watchdog_cycle(db: Session, now: datetime.datetime) -> Dict[str, int]:
                             node.id,
                             node.node_no,
                         )
+
+    # 3. Retention cleanup: delete node_commands that are acked or expired and older than COMMAND_RETENTION_DAYS
+    retention_cutoff = now - datetime.timedelta(days=COMMAND_RETENTION_DAYS)
+    deleted_commands = (
+        db.query(NodeCommand)
+        .filter(
+            or_(
+                NodeCommand.acked_at.isnot(None),
+                NodeCommand.expires_at <= now,
+            ),
+            NodeCommand.created_at < retention_cutoff,
+        )
+        .delete(synchronize_session=False)
+    )
+    if deleted_commands:
+        logger.info(
+            "Watchdog cycle deleted %d stale node commands older than %d days",
+            deleted_commands,
+            COMMAND_RETENTION_DAYS,
+        )
 
     db.commit()
     return {"opened": opened, "resolved": resolved}

@@ -66,11 +66,17 @@ def apply_migrations():
 @pytest.fixture(autouse=True)
 def clean_database():
     """Truncates all tables between test cases for absolute isolation."""
+    from app.routers.ingest import _https_warning_timestamps, _unkeyed_warning_timestamps
+    from app.services.report_service import _USER_REPORT_TIMESTAMPS
+    _https_warning_timestamps.clear()
+    _unkeyed_warning_timestamps.clear()
+    _USER_REPORT_TIMESTAMPS.clear()
+
     def _truncate():
         with engine.connect() as conn:
             conn.execute(
                 text(
-                    "TRUNCATE TABLE check_flags, check_events, qr_tokens, assignments, worker_profiles, alerts, audit_log, readings, nodes, gateways, "
+                    "TRUNCATE TABLE worker_reports, node_commands, incident_roster, incidents, check_flags, check_events, qr_tokens, assignments, worker_profiles, alerts, audit_log, readings, nodes, gateways, "
                     "user_mines, users, tunnels, mines, companies RESTART IDENTITY CASCADE;"
                 )
             )
@@ -79,6 +85,9 @@ def clean_database():
     _truncate()
     yield
     _truncate()
+    _https_warning_timestamps.clear()
+    _unkeyed_warning_timestamps.clear()
+    _USER_REPORT_TIMESTAMPS.clear()
 
 
 @pytest.fixture
