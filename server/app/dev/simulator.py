@@ -275,8 +275,8 @@ class Simulator:
                 with urllib.request.urlopen(req, timeout=2.0) as resp:
                     if resp.status == 200:
                         sent += 1
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"[simulator] SOS packet failed to send: {exc}", file=sys.stderr)
             time.sleep(0.1)
 
         # Next regular packet with sos_active = 1
@@ -310,8 +310,8 @@ class Simulator:
             with urllib.request.urlopen(req, timeout=2.0) as resp:
                 if resp.status == 200:
                     sent += 1
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[simulator] SOS packet failed to send: {exc}", file=sys.stderr)
 
         return sent
 
