@@ -31,7 +31,7 @@ def run_flag_cycle(
     Evaluates the flag against the LAST shift of the chain.
     """
     if now is None:
-        now = utcnow()
+        now = clock.utcnow()
     elif now.tzinfo is None:
         now = now.replace(tzinfo=datetime.timezone.utc)
 

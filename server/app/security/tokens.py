@@ -3,7 +3,6 @@
 Owns HS256 JWT encoding, expiration enforcement, and session cookie configuration.
 Must NOT execute database lookups or load passwords.
 """
-import datetime
 import time
 from typing import Optional
 import jwt

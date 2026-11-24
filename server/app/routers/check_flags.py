@@ -5,7 +5,7 @@ Must NOT define database models, calculate raw sensor telemetry, or omit clearan
 """
 import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, joinedload
 
@@ -22,7 +22,6 @@ from app.schemas.checkins import (
 from app.security.dependencies import (
     get_allowed_mine_ids,
     require_role,
-    security_logger,
 )
 from app.security.roles import (
     ROLE_ENGINEER,

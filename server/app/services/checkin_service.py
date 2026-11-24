@@ -5,7 +5,7 @@ Must NOT handle HTTP requests, import FastAPI components, or leak worker contact
 """
 import datetime
 import hashlib
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 from sqlalchemy.orm import Session, joinedload
 
 from app.config import CHECKIN_EARLY_MIN
@@ -20,7 +20,7 @@ from app.security.roles import ROLE_FOREMAN, ROLE_MINER
 from app.services.audit import record_audit
 from app.services import clock
 from app.services.headcount import get_worker_latest_event
-from app.services.incident_service import add_late_arrival, mark_accounted_on_exit
+from app.services.roll_call_service import add_late_arrival, mark_accounted_on_exit
 from app.services.tunnel_scope import get_current_tunnel_id
 
 

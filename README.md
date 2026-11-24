@@ -3,6 +3,53 @@
 ## 1. Overview and Pipeline
 The Coal Mine Subsidence Monitoring System is an IoT telemetry, geotechnical analysis, and GIS monitoring platform designed for surface subsidence detection, incline tracking, and DGMS compliance in underground coal mining operations.
 
+### System Architecture
+
+```mermaid
+flowchart TD
+    subgraph Physical["Physical Underground Tier"]
+        Nodes["ESP32 Sensor Nodes (MPU-6050, SW160, SOS, Buzzer)"]
+        Gateway["ESP32 Gateway Bridge (Receiver_main.c)"]
+        Nodes -- "ESP-NOW (37-byte Telemetry)" --> Gateway
+        Gateway -. "ESP-NOW (10-byte Downlink)" .-> Nodes
+    end
+
+    subgraph Ingestion["Ingestion & Boundary Tier"]
+        IngestAPI["POST /api/ingest (38-byte binary packet)"]
+        Gateway -- "HTTP / X-Gateway-Key" --> IngestAPI
+        IngestAPI -. "HTTP 200 (CMD Downlink Line)" .-> Gateway
+    end
+
+    subgraph ServerTier["FastAPI Application Tier (Python 3.11)"]
+        IngestAPI --> IngestService["Ingest & Deduplication Service"]
+        IngestService --> Classifier["DGMS Hazard Classifier"]
+        IngestService --> SOSService["SOS & Incident Service"]
+        Watchdog["Watchdog Runner Daemon (Postgres Advisory Lock)"]
+        HeadcountService["Headcount & Check Flag Service"]
+        ProductionService["Production & Profile Domain Service"]
+        AuthRBAC["RBAC & Session Service (HS256 JWT, PBKDF2)"]
+    end
+
+    subgraph Storage["PostgreSQL 16 Storage Tier"]
+        DB[("mine_subsidence (21 Core Tables)")]
+        IngestService --> DB
+        SOSService --> DB
+        Watchdog --> DB
+        HeadcountService --> DB
+        ProductionService --> DB
+        AuthRBAC --> DB
+    end
+
+    subgraph Frontend["Web Presentation Tier"]
+        Dashboard["Neo-Brutalist Dashboard (Leaflet Map, SVG Charts)"]
+        Scanner["Gate Scanner UI (QR Check-in / Check-out)"]
+        ProfileModal["Mine Profile & Output Modal (5 Groups Superior & Worker View)"]
+        Dashboard <--> AuthRBAC
+        Scanner <--> HeadcountService
+        ProfileModal <--> ProductionService
+    end
+```
+
 ### Data Pipeline
 ```
 [ESP32 Sensor Nodes]
@@ -191,9 +238,13 @@ coal-mine-subsidence-monitoring/
 │       ├── test_step8_followup_sos.py            # Step 8 follow-up SOS incident idempotency, merge, and retry tests
 │       ├── test_step8_reports_and_sos.py         # Step 8 worker reports, device SOS, merge window, and flood guard tests
 │       └── test_step9_mine_profile_and_production.py # Step 9 profile 5 groups, worker view, contacts, production sums
-└── tools/                                        # Developer and project reporting tooling
+└── tools/                                        # Developer, deployment, and operational tooling
+    ├── backup_db.sh                              # Automated PostgreSQL custom-format backup and retention script
     ├── build_synopsis.py                         # Synopsis document generation tool
-    └── render_pages.py                           # PDF page rendering utility
+    ├── generate_presentation.py                  # Presentation slide generation tool
+    ├── generate_route_table.py                   # Automated OpenAPI route table and policy matrix generator
+    ├── render_pages.py                           # PDF page rendering utility
+    └── restore_db.md                             # Comprehensive database restoration runbook and verification guide
 ```
 
 ---
@@ -264,62 +315,91 @@ Configuration is loaded from `.env` in the repository root using `python-dotenv`
 
 ---
 
-## 5. How to Run
+## 5. Fresh-Clone Quick Start
 
-All server commands must be executed from the `server/` directory:
+Follow these exact steps to clone, configure, migrate, seed, run, simulate, test, and back up the system from scratch:
 
+### 1. Clone Repository & Setup Environment
 ```bash
-cd server
+git clone https://github.com/nikhilgurnani/Mine-Subsidence-Monitoring.git
+cd "Mine-Subsidence-Monitoring"
+
+# Create and activate Python 3.11 virtual environment
+python -m venv server/venv
+
+# Linux / macOS:
+source server/venv/bin/activate
+
+# Windows (PowerShell):
+.\server\venv\Scripts\Activate.ps1
 ```
 
-### 0. Install Dependencies
+### 2. Install Pinned Dependencies
 ```bash
-# Production runtime dependencies:
-pip install -r requirements.txt
-
-# Or development & test dependencies:
-pip install -r requirements-dev.txt
+pip install -r server/requirements-dev.txt
 ```
 
-### 1. Apply Database Migrations
+### 3. Configure Environment Variables
 ```bash
-alembic upgrade head
+cp .env.example .env
+```
+Open `.env` and set your local PostgreSQL database credentials and security tokens:
+- `DATABASE_URL=postgresql+psycopg://postgres:your_password@localhost:5432/mine_subsidence`
+- `TEST_DATABASE_URL=postgresql+psycopg://postgres:your_password@localhost:5432/mine_subsidence_test`
+- `JWT_SECRET=your_32_character_minimum_random_secret_string`
+
+### 4. Create PostgreSQL Databases
+```bash
+# Create application and test databases
+createdb -h localhost -U postgres mine_subsidence
+createdb -h localhost -U postgres mine_subsidence_test
 ```
 
-### 2. Seed Initial Company and Manager
+### 5. Apply Database Migrations
 ```bash
-# Using interactive getpass prompt:
-python -m app.cli.seed_manager --company "Bharat Coking Coal Limited" --username "manager"
+# Set PYTHONPATH to server directory
+export PYTHONPATH="server"  # Windows PowerShell: $env:PYTHONPATH="server"
 
-# Or specifying the password via environment variable:
-export SEED_MANAGER_PASSWORD="your-secure-password"
-python -m app.cli.seed_manager --company "Bharat Coking Coal Limited" --username "manager"
+alembic -c server/alembic.ini upgrade head
 ```
-*(If `SEED_MANAGER_PASSWORD` is not set and `--password` is omitted in an interactive terminal, `getpass` prompts securely).*
 
-### 3. Seed Demo Mine and Gateway Inventory (Dev Only)
+### 6. Seed Initial Company & Manager
+```bash
+python -m app.cli.seed_manager --company "Bharat Coking Coal Limited" --username "manager" --password "ManagerPass@2026"
+```
+
+### 7. Seed Demo Hardware & Mine Inventory (Dev Only)
 ```bash
 python -m app.dev.seed_demo_data
 ```
 
-### 4. Start Development Web Server
+### 8. Start Development Server
 ```bash
 uvicorn app.main:app --reload
 ```
-Dashboard is accessible at: `http://127.0.0.1:8000`.
+Access the Neo-Brutalist dashboard at: `http://localhost:8000`.
 
-### 5. Run Standalone Telemetry Simulator
+### 9. Run Hardware Telemetry Simulator
+In a separate terminal (with virtualenv active and `PYTHONPATH="server"`):
 ```bash
+# Continuous packet broadcast:
 python -m app.dev.simulator
-# Or run a single burst step:
-python -m app.dev.simulator --once
+
+# Or trigger a physical SOS emergency signal burst:
+python -m app.dev.simulator --sos
 ```
 
-### 6. Run Automated Test Suite
-Ensure `TEST_DATABASE_URL` is set in `.env` (pointing to a database whose name ends with `_test`):
+### 10. Run Full Automated Test Suite
 ```bash
-python -m pytest -v
+pytest -v
 ```
+*(Executes all 161 automated test cases against `mine_subsidence_test` in complete isolation).*
+
+### 11. Run Automated Database Backup
+```bash
+bash tools/backup_db.sh
+```
+*(Dumps `mine_subsidence` in custom compressed format to `backups/coalmine_YYYYmmdd_HHMMSS.dump` and retains newest 14 archives).*
 
 ---
 
@@ -683,6 +763,28 @@ The schema is managed strictly via Alembic migrations. The database contains the
 > **Why a Partial Unique Index on readings?**  
 > While firmware transmits `boot_id = 0`, node transmission counters restart from 0 after each hardware reboot. A strict non-partial unique constraint on `(node_id, boot_id, counter)` would permanently reject valid post-reboot readings that reuse earlier counter values. Therefore, the unique index applies **only** where `boot_id <> 0`. For `boot_id = 0`, deduplication is performed at the application layer with a 4-second time window rule.
 
+### 6.2. Database Backup and Recovery
+
+Database backups and disaster recovery runbooks are managed via `tools/backup_db.sh` and `tools/restore_db.md` using PostgreSQL's native custom-format compressed archive (`pg_dump -Fc`).
+
+- **Automated Backup Script (`tools/backup_db.sh`)**:
+  - Reads connection credentials from `DATABASE_URL` (or `.env`), strips driver prefixes, and masks passwords in output.
+  - Generates custom compressed dumps named `coalmine_YYYYmmdd_HHMMSS.dump` into `$BACKUP_DIR` (default `backups/`).
+  - Automatically prunes older backups to keep the newest `$BACKUP_KEEP` archives (default 14).
+  - Exits non-zero (`set -euo pipefail`) upon any error without leaking secrets.
+
+- **Automated Cron Schedule Example**:
+  To schedule automated daily database backups at 02:00 AM UTC with 14-day retention:
+  ```bash
+  # In system crontab (crontab -e):
+  0 2 * * * cd /path/to/Mine-Subsidence-Monitoring && BACKUP_DIR=backups BACKUP_KEEP=14 bash tools/backup_db.sh >> /var/log/coalmine_backup.log 2>&1
+  ```
+
+- **Database Restoration Runbook (`tools/restore_db.md`)**:
+  - Step-by-step restoration instructions using `pg_restore` with `--clean --if-exists` or clean database recreation with `dropdb` / `createdb`.
+  - Immediate post-restore schema validation via `python -m alembic -c server/alembic.ini check` to verify zero migration drift.
+  - Sanity queries to verify administrative accounts and telemetry records.
+
 ---
 
 ## 7. Wire Formats
@@ -738,84 +840,85 @@ Radio command sent by gateway over ESP-NOW:
 
 ---
 
-## 8. API Reference
+## 8. API Reference and Consolidated Access Policy Matrix
 
-### Implemented Routes
+> **Automated Policy Matrix**: The table below is provably complete across all **71** API routes registered in FastAPI. It is generated by inspecting `app.openapi()` and the test suite's `POLICY_TABLE` (`tests/test_auth_and_roles.py`).  
+> - **Roles**: **Manager** (full administrative scope), **Safety Officer** (geotechnical & evacuation authority), **Engineer** (hardware & shifts), **Foreman** (shift & own tunnel scanner), **Miner** (restricted worker-safe view), and **Anonymous** (unauthenticated).  
+> - **Status Indicators**: `Allowed` (unrestricted within tenant), `Scoped` (permitted mines only), `Own Tunnel` (restricted to currently assigned tunnel), `403` (forbidden for role), `401` (unauthenticated).
 
-| Method | Path | Allowed Callers | Request | Response | Status Codes |
-|---|---|---|---|---|---|
-| `POST` | `/api/ingest` | ESP32 Gateways | Body: Exactly 38-byte binary packet. Header: `X-Gateway-Key` (required unless `ALLOW_UNKEYED_INGEST=true`). `X-Gateway-Id` is ignored. | Empty body | `200`, `400`, `401` |
-| `GET` | `/api/health` | Public | None | `{"status": "healthy", "database": "PostgreSQL", "payload_size": 38}` | `200` |
-| `POST` | `/api/auth/login` | Public | JSON: `{"username": "...", "password": "..."}` | Sets HttpOnly cookie `session`. Body: `{"user": {...}, "force_pw_change": bool}` | `200`, `400`, `401`, `429` |
-| `GET` | `/api/auth/me` | Any Authenticated User | None (requires `session` cookie; works during force_pw_change) | `{"user": {...}, "allowed_mine_ids": [...]}` | `200`, `401` |
-| `POST` | `/api/auth/logout` | Public | None (always returns 200 and clears `session` cookie) | `{"message": "Logged out"}` | `200` |
-| `POST` | `/api/auth/change-password` | Any Authenticated User | JSON: `{"current_password": "...", "new_password": "..."}` | Clears `force_pw_change`, records audit (`auth.password_change`). Body: `{"message": "..."}` | `200`, `400`, `401` |
-| `GET` | `/api/mines` | Any Role (Scoped) | Scoped to permitted mines. | `{"mines": [...]}` | `200`, `401` |
-| `POST` | `/api/mines` | Manager Only | JSON: `{"name", "subsidiary", "status", "method", "lat", "lon", "area_ha", "max_depth_m"}`. Records audit, auto-assigns creator. | Created mine object | `200`, `400`, `401`, `403`, `409` |
-| `GET` | `/api/mines/{id}/tunnels` | Any Role (Scoped) | Scoped to permitted mines. | `{"tunnels": [...]}` | `200`, `401`, `404` |
-| `POST` | `/api/mines/{id}/tunnels` | Manager Only | JSON: `{"name", "code", "depth_m", "status"}`. Records audit. | Created tunnel object | `200`, `400`, `401`, `403`, `404`, `409` |
-| `POST` | `/api/mines/{id}/gateways` | Manager Only | JSON: `{"name", "mac"}`. Generates 256-bit key, records audit. Header `Cache-Control: no-store`. | `{"id", "name", "mac", "active", "mine_id", "api_key"}` | `200`, `400`, `401`, `403`, `404`, `409` |
-| `GET` | `/api/mines/{id}/gateways` | Manager Only | Path param. Excludes key and hash. | `{"gateways": [...]}` | `200`, `401`, `403`, `404` |
-| `PATCH` | `/api/gateways/{id}` | Manager Only | JSON: `{"name", "active"}`. Records audit (`gateway.update`, or `gateway.disable` when `active: false`). | Updated gateway object (no key) | `200`, `400`, `401`, `403`, `404` |
-| `POST` | `/api/gateways/{id}/rotate-key` | Manager Only | Path param. Generates new key, updates hash, records audit. Header `Cache-Control: no-store`. | `{"id", "name", "mac", "active", "mine_id", "api_key"}` | `200`, `401`, `403`, `404` |
-| `DELETE` | `/api/gateways/{id}` | Manager Only | Path param. Disables gateway (`active=false`). Records audit (`gateway.disable`). | Updated gateway object (no key) | `200`, `401`, `403`, `404` |
-| `GET` | `/api/nodes` | Any Role (Scoped) | Query: `gateway` (optional), `mine_id` (optional). Scoped to permitted mines.<br>• **Workers**: `WorkerNodeView` (stripped).<br>• **Superiors**: `SuperiorNodeView`. | `{"now": float, "nodes": [...]}` | `200`, `401`, `404` |
-| `GET` | `/api/placements` | Any Role (Scoped) | Query: `mine_id` (optional). Scoped to permitted mines.<br>• **Workers**: `WorkerPlacementView`.<br>• **Superiors**: `SuperiorPlacementView`. | `{"placements": [...]}` | `200`, `401`, `404` |
-| `GET` | `/api/unplaced` | Superiors Only | Query: `mine_id` (optional). Scoped to permitted mines. | `{"unplaced": [...]}` | `200`, `401`, `403`, `404` |
-| `PATCH` | `/api/nodes/{id}/placement` | Superiors Only | JSON: `{"tunnel_id", "lat", "lon"}`. Validates tunnel belongs to gateway's mine. Records audit. | Serialized node object | `200`, `400`, `401`, `403`, `404` |
-| `DELETE` | `/api/nodes/{id}/placement` | Superiors Only | Sets `tunnel_id`, `lat`, `lon`, `placed_by`, `placed_at` to `NULL`. Records audit. | Serialized node object | `200`, `401`, `403`, `404` |
-| `GET` | `/api/gateways` | Superiors Only | Query: `mine_id` (optional). Scoped to permitted mines. | `{"now": float, "gateways": [...]}` | `200`, `401`, `403`, `404` |
-| `GET` | `/api/history` | Superiors Only | Query: `gateway`, `node_id`, `limit`, `only_alerts`. Permitted mines only. | `{"readings": [...]}` | `200`, `401`, `403`, `404` |
-| `GET` | `/api/export.xlsx` | Superiors Only | Query: `gateway`, `node_id`. Permitted mines only. | Excel binary spreadsheet (.xlsx) | `200`, `401`, `403`, `404` |
-| `GET` | `/api/alerts` | Superiors Only | Query: `status` (`open` or `all`, default `open`), `mine_id` (optional). Scoped to permitted mines. Ordered by `opened_at DESC`, limit 200. | `{"alerts": [{"id", "kind", "title", "mine_id", "gateway_id", "node_id", "opened_at", "resolved_at", "acknowledged_at", "acknowledged_by_name"}]}` | `200`, `401`, `403` |
-| `POST` | `/api/alerts/{alert_id}/ack` | Superiors Only | Path param. Permitted mines only. Sets `acknowledged_by` and `acknowledged_at`. Idempotent 200. Records audit (`alert.acknowledge`). | Serialized alert object with current state | `200`, `401`, `403`, `404` |
-| `GET` | `/api/notifications/config` | Superiors Only | Scoped to user's company. | `{"config": {}}` | `200`, `401`, `403` |
-| `POST` | `/api/notifications/config` | Superiors Only | JSON: channel settings. Scoped to user's company. | `{"message": "Notification configurations updated"}` | `200`, `401`, `403` |
-| `POST` | `/api/notifications/test` | Superiors Only | None | `{"detail": "Notification testing will be available in Step 10"}` | `501`, `401`, `403` |
-| `GET` | `/api/users` | Manager Only | Company tenant isolated. | `{"users": [...]}` | `200`, `401`, `403` |
-| `POST` | `/api/users` | Manager Only | JSON: `{"username", "full_name", "role", "mine_ids", "initial_password"}`. Records audit. | Created user object | `200`, `400`, `401`, `403`, `404`, `409` |
-| `PATCH` | `/api/users/{user_id}` | Manager Only | JSON: `{"role", "active", "mine_ids", "reset_password", "full_name"}`. Records audit. | Updated user object | `200`, `400`, `401`, `403`, `404` |
-| `DELETE` | `/api/users/{user_id}` | Manager Only | Path param. Soft-deactivates user (`active=false`). Records audit (`user.deactivate`). | `{"message": "User deactivated successfully"}` | `200`, `400`, `401`, `403`, `404` |
-| `POST` | `/api/demo/seed` | Manager Only | Returns 404 when `ENABLE_DEMO_ROUTES=false`. Seeds mine, tunnel, and simulator gateways with `DEMO_GATEWAY_KEY`. | `{"message": "Demo coal mine datasets seeded"}` | `200`, `401`, `403`, `404` |
-| `POST` | `/api/demo/step` | Manager Only | Returns 404 when `ENABLE_DEMO_ROUTES=false`. | `{"message": "Single simulated step generated"}` | `200`, `401`, `403`, `404` |
-| `POST` | `/api/demo/toggle-live`| Manager Only | JSON (optional): `{"enable": bool}`. Returns 404 when `ENABLE_DEMO_ROUTES=false`. | `{"running": bool}` | `200`, `401`, `403`, `404` |
-| `GET` | `/api/demo/status` | Manager Only | Returns 404 when `ENABLE_DEMO_ROUTES=false`. | `{"running": bool}` | `200`, `401`, `403`, `404` |
-| `POST` | `/api/demo/trigger-hazard` | Manager Only | JSON: `{"gateway_mac_address", "node_id", "level"}`. 404 when demo disabled. | `{"message": "..."}` | `200`, `401`, `403`, `404` |
-| `GET` | `/api/workers` | Superiors Only | Query: `mine_id`, `tunnel_id`, `q`. Scoped to permitted mines. Includes `has_badge` and `badge_issued_at`. | `{"workers": [{"id", "username", "full_name", "role", "active", "employee_no", "has_badge", "badge_issued_at", "current_tunnel"}]}` | `200`, `401`, `403`, `404` |
-| `GET` | `/api/workers/{id}` | Superiors Only | Path param. Permitted mines only. Includes `has_badge` and `badge_issued_at`. | Full worker details, phone, emergency contact, `has_badge`, `badge_issued_at`, `upcoming_shifts`, `past_shifts` | `200`, `401`, `403`, `404` |
-| `PUT` | `/api/workers/{id}/profile` | Manager Only | JSON: `employee_no`, `phone`, `emergency_contact_name`, `emergency_contact_phone`, `joined_on`. Catch duplicate `employee_no` (409) and non-worker roles (400). Records audit (`worker.profile_update`) with changed fields only. | Updated profile object | `200`, `400`, `401`, `403`, `404`, `409`, `422` |
-| `POST` | `/api/workers/{id}/badge` | Manager Only | Issues 256-bit QR badge for active foreman/miner. Revokes prior tokens. Header `Cache-Control: no-store`. Records audit (`badge.issue`). Plaintext token shown once. | `{"token", "badge_svg", "issued_at", "worker": {"id", "full_name", "employee_no"}}` | `200`, `400`, `401`, `403`, `404` |
-| `DELETE` | `/api/workers/{id}/badge` | Manager or Foreman (own tunnel) | Revokes active badges for worker. Non-manager/non-foreman get 403; non-matching tunnel gets 404. Records audit (`badge.revoke`). | `{"revoked": count}` | `200`, `401`, `403`, `404` |
-| `POST` | `/api/checkins` | Scanners (Manager, Safety Officer, Engineer, Foreman; Miners get 403) | JSON: `{"token", "direction": "in"|"out", "tunnel_id"}`. Scans QR badge. 5s deduplication, state transitions, shift association warning. Rate limited (429). | `{"duplicate": bool, "worker": {...}, "direction": str, "tunnel": {...}, "scanned_at": str, "warnings": [...]}` | `200`, `401`, `403`, `404`, `409`, `422`, `429` |
-| `POST` | `/api/checkins/manual` | Scanners (Manager, Safety Officer, Engineer, Foreman; Miners get 403) | JSON: `{"user_id", "direction": "in"|"out", "tunnel_id", "note"}`. Records manual entry when badge unavailable. Records audit (`checkin.manual`). Rate limited (429). | `{"duplicate": bool, "worker": {...}, "direction": str, "tunnel": {...}, "scanned_at": str, "warnings": [...]}` | `200`, `401`, `403`, `404`, `409`, `422`, `429` |
-| `GET` | `/api/checkins` | Scanners (Manager, Safety Officer, Engineer, Foreman; Miners get 403) | Query: `tunnel_id`, `limit` (default 20, max 100). Scoped (foreman: own tunnel only). Ordered by `scanned_at DESC`. | `{"events": [{"id", "worker": {...}, "tunnel": {...}, "direction", "method", "scanned_at", "scanner": {...}}]}` | `200`, `401`, `403`, `404` |
-| `GET` | `/api/headcount` | Scanners (Manager, Safety Officer, Engineer, Foreman; Miners get 403) | Query: `mine_id` (optional for superiors). Foreman gets own tunnel only; superiors get all allowed tunnels. Live inside count via DISTINCT ON latest check events and active scheduled counts. | Dict of `tunnel_id -> {"tunnel_id", "inside", "scheduled_now", "workers": [{"id", "full_name", "employee_no", "scanned_at"}]}` | `200`, `401`, `403`, `404` |
-| `GET` | `/api/check-flags` | Scanners (Manager, Safety Officer, Engineer, Foreman; Miners get 403) | Query: `status` (`open` or `all`, default `open`), `mine_id`, `tunnel_id`. Scoped (foreman: own tunnel only). Flags shifts ended without check-out past grace. | `{"flags": [{"id", "worker": {...}, "assignment": {...}, "raised_at", "overdue": bool, "cleared_at", "cleared_by_name", "note"}]}` | `200`, `401`, `403`, `404` |
-| `PATCH` | `/api/check-flags/{id}` | Scanners (Foreman: own tunnel only; Superiors: scoped; others 404) | JSON: `{"note"}` (3-500 chars). Clears flag, appends manual 'out' event to fix headcount, and records audit (`check_flag.clear`) with flag ID only (omitting note text). | Updated flag object with `cleared_at` and `cleared_by_name` | `200`, `401`, `403`, `404`, `409`, `422` |
-| `POST` | `/api/assignments` | Superiors Only (Manager, Safety Officer, Engineer) | JSON: `user_id`, `tunnel_id`, `starts_at`, `ends_at` (ISO with offset). Validates duration <= 16h, mine assignment, active status, overlap. Records audit (`assignment.create`). | `{"assignment": {...}, "warnings": [...]}` | `201`, `400`, `401`, `403`, `404`, `409`, `422` |
-| `PATCH` | `/api/assignments/{id}` | Superiors Only (Manager, Safety Officer, Engineer) | JSON: `ends_at` (ISO with offset). Shortens shift only (`starts_at < ends_at <= current_ends_at`). Records audit (`assignment.update`). | `{"assignment": {...}}` | `200`, `400`, `401`, `403`, `404`, `422` |
-| `DELETE` | `/api/assignments/{id}` | Superiors Only (Manager, Safety Officer, Engineer) | Path param. Future shifts only (started shifts rejected with 409). Records audit (`assignment.delete`). | `{"message": "Assignment deleted successfully"}` | `200`, `401`, `403`, `404`, `409` |
-| `GET` | `/api/assignments` | Superiors Only | Query: `user_id`, `mine_id`, `tunnel_id`, `from`, `to`, `limit` (default 500, max 1000), `offset` (default 0). Default window: `now-7d .. now+30d`. Eager-loads user, worker_profile, tunnel, and mine. Scoped to permitted mines. | `{"assignments": [...]}` | `200`, `401`, `403`, `404`, `422` |
-| `GET` | `/api/me/shifts` | Any Authenticated User | Query: `from`, `to` (optional). Worker-safe view (omits `created_by`). | `{"shifts": [...]}` | `200`, `401`, `422` |
-| `GET` | `/api/me/profile` | Any Authenticated User | None. Returns own worker profile with current tunnel, or empty object for non-workers. | Worker profile object or `{}` | `200`, `401` |
-| `POST` | `/api/incidents` | Superiors Only (Manager, Safety Officer, Engineer) | JSON: `mine_id`, `tunnel_id`, `title`, `level` (1..3), `siren` (bool). Opens incident, snapshots inside workers to roster, locks row FOR UPDATE. Records audit (`incident.open`). | `{"incident": {...}}` | `201`, `400`, `401`, `403`, `404`, `422` |
-| `GET` | `/api/incidents` | Scanners (Manager, Safety Officer, Engineer, Foreman; Miners get 403) | Query: `mine_id`, `tunnel_id`, `status` (`open`, `closed`, `all`), `limit` (default 100, max 500), `offset`. Scoped. Ordered by `opened_at DESC`. | `{"incidents": [...]}` | `200`, `401`, `403`, `404` |
-| `GET` | `/api/incidents/{id}` | Scanners (Manager, Safety Officer, Engineer, Foreman; Miners get 403) | Path param. Returns incident details with unaccounted and roster counts. Scoped. | Incident detail object | `200`, `401`, `403`, `404` |
-| `GET` | `/api/incidents/{id}/roster` | Scanners (Manager, Safety Officer, Engineer, Foreman; Miners get 403) | Path param. Returns snapshot roster with accounting status and `late_arrival` indicator. Scoped. | `{"roster": [{"user_id", "full_name", "employee_no", "accounted_at", "accounted_by", "late_arrival"}]}` | `200`, `401`, `403`, `404` |
-| `POST` | `/api/incidents/{id}/roster/{user_id}/account` | Scanners (Manager, Safety Officer, Engineer, Foreman; Miners get 403) | Path params. Manually accounts worker on evacuation roster. Row locked FOR UPDATE. Closed incident returns 409 `{"code": "incident_closed"}`. Records audit (`incident.account`). | `{"user_id": int, "accounted_at": str, "accounted_by": int}` | `200`, `401`, `403`, `404`, `409` |
-| `PATCH` | `/api/incidents/{id}` | Superiors Only (Manager, Safety Officer, Engineer) | JSON: `siren` (bool), `close` (bool), `confirm_unaccounted` (bool), `close_note` (str). Row locked FOR UPDATE. Closing with unaccounted workers without confirmation returns 409 `{"code": "unaccounted_workers", "count": N}`. Records audit (`incident.close`, `incident.siren`). | `{"incident": {...}}` | `200`, `400`, `401`, `403`, `404`, `409`, `422` |
-| `POST` | `/api/nodes/{node_id}/commands` | Superiors Only (Manager, Safety Officer, Engineer) | Path param. Node must be placed (`is_placed(node)`) and gateway active. JSON: `cmd` (`buzzer_on`, `buzzer_off`, `resume`). Enforces single pending per node. Returns `status: "pending"`. Records audit (`command.create`). | `{"command": {...}, "status": "pending"}` | `201`, `400`, `401`, `403`, `404`, `422` |
-| `GET` | `/api/nodes/{node_id}/commands` | Superiors Only (Manager, Safety Officer, Engineer) | Path param. Scoped through node gateway mine. Returns recent commands with status (`pending`, `acked`, `expired`, `superseded`). | `{"commands": [...]}` | `200`, `401`, `403`, `404` |
-| `GET` | `/api/mines/{id}/profile` | Any Authenticated User | Path param. Superiors get full model (5 groups: identity, classification, headcount with lookahead, production current month summary, contacts hierarchy). Foremen & miners get trimmed worker-safe model (`id`, `name`, `status`, `evacuation_notes`, `contacts`, `current_tunnel`). Extra fields forbidden. | `SuperiorMineProfileResponse` or `WorkerMineProfileResponse` | `200`, `401`, `404` |
-| `PATCH` | `/api/mines/{id}/profile` | Superiors Only (Manager, Safety Officer, Engineer) | JSON: `name?`, `subsidiary?`, `status?`, `method?`, `area_ha?`, `max_depth_m?`, `lat?`, `lon?`, `evacuation_notes?`. Validates coordinate pairs, area/depth >= 0, duplicate name 409. Records audit (`mine.update`) with field names only. | `SuperiorMineProfileResponse` | `200`, `400`, `401`, `403`, `404`, `409`, `422` |
-| `PUT` | `/api/mines/{id}/contacts` | Superiors Only (Manager, Safety Officer, Engineer) | JSON: `{"contacts": [{"role", "name", "phone", "rank"}]}`. Replaces all contacts atomically in 1 transaction. Ranks unique 1..20, phone format validated. Records audit (`mine.contacts_update`) with `{count}` only. | `{"contacts": [...]}` | `200`, `400`, `401`, `403`, `404`, `422` |
-| `GET` | `/api/mines/{id}/headcount` | Superiors Only (Manager, Safety Officer, Engineer) | Path param. Scoped. Returns totals and per-tunnel breakdown `{tunnel_id, tunnel_name, inside, scheduled_now, upcoming}` using `inside_now` in constant queries. | `{"totals": {...}, "tunnels": [...]}` | `200`, `401`, `403`, `404` |
-| `GET` | `/api/mines/{id}/production` | Superiors Only (Manager, Safety Officer, Engineer) | Query: `month=YYYY-MM` (default current calendar month in `HOURS_TIMEZONE`). Returns daily entries and monthly summary (`planned_total_t`, `actual_total_t`, `variance_t`, `achievement_pct`, `reported_days`). Planned and actual summed independently. | `{"month": str, "days": [...], "summary": {...}}` | `200`, `401`, `403`, `404`, `422` |
-| `PUT` | `/api/mines/{id}/production` | Superiors Only (Manager, Safety Officer, Engineer) | JSON: `{"entries": [{"day", "planned_t?", "actual_t?"}]}`. 1-62 entries, no duplicates, max 5 years past, future actual_t rejected in `HOURS_TIMEZONE`. Audit (`mine.production_update`) with `{days: n, months: [...]}`. | `{"updated": int, "summaries": [...]}` | `200`, `400`, `401`, `403`, `404`, `422` |
-| `POST` | `/api/reports` | Any Authenticated User | JSON: `type` (`injury`, `equipment_fault`, `gas_smell`, `need_help`, `sos`), `severity` (`low`, `medium`, `high`, `critical`), `tunnel_id`, `description`. `type='sos'` forces `critical`. Rate limited to 20/hr (429 with `Retry-After`). Extra fields forbidden (422). Records audit (`report.create`). | `WorkerReportView` | `201`, `400`, `401`, `404`, `422`, `429` |
-| `GET` | `/api/reports` | Any Authenticated User | Query: `status` (`open`, `acknowledged`, `resolved`), `type`, `mine_id`, `tunnel_id`, `limit` (default 100, max 500), `offset`. Superiors get `SuperiorReportView` (telemetry, actor names, node/gateway, repeat count); workers get `WorkerReportView` (sensitive metadata strictly omitted, own reports only). Gateway MAC never returned. | List of `SuperiorReportView` or `WorkerReportView` | `200`, `401`, `404`, `422` |
-| `PATCH` | `/api/reports/{id}` | Superiors Only (Manager, Safety Officer, Engineer; others 403) | JSON: `status` (`acknowledged`, `resolved`), `resolution_note` (max 500 chars). Row locked FOR UPDATE. Direct `open -> resolved` records both. Backwards/repeated transitions return 409 `{"code": "invalid_transition"}`. Records audit (`report.acknowledge`, `report.resolve`). | `SuperiorReportView` | `200`, `400`, `401`, `403`, `404`, `409`, `422` |
-| `GET` | `/` | Browser | None | HTML dashboard (`index.html`) | `200` |
+| Method | Path | Policy | Manager | Safety Officer | Engineer | Foreman | Miner | Anon | Summary |
+|---|---|---|---|---|---|---|---|---|---|
+| `GET` | `/api/alerts` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Returns connectivity and hazard alerts scoped to permitted mines (superiors only). |
+| `POST` | `/api/alerts/{alert_id}/ack` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Acknowledges an alert idempotently within the caller's permitted mines. |
+| `GET` | `/api/assignments` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Queries shift assignments within caller's authorized mines, with default window and eager loading. |
+| `POST` | `/api/assignments` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Schedules a worker to an underground tunnel shift (Superiors: Manager, Safety Officer, Engineer). |
+| `DELETE` | `/api/assignments/{assignment_id}` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Deletes an unstarted future shift (Superiors: Manager, Safety Officer, Engineer). |
+| `PATCH` | `/api/assignments/{assignment_id}` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Shortens an active or upcoming shift end time (Superiors: Manager, Safety Officer, Engineer). |
+| `POST` | `/api/auth/change-password` | `any_authenticated` | Allowed | Allowed | Allowed | Allowed | Allowed | 401 | Changes password, satisfies force_pw_change gate, and reissues session token. |
+| `POST` | `/api/auth/login` | `public` | Allowed | Allowed | Allowed | Allowed | Allowed | Allowed | Authenticates username/password credentials and issues an HttpOnly session cookie. |
+| `POST` | `/api/auth/logout` | `public` | Allowed | Allowed | Allowed | Allowed | Allowed | Allowed | Terminates session and clears the HttpOnly cookie. Always returns 200. |
+| `GET` | `/api/auth/me` | `any_authenticated` | Allowed | Allowed | Allowed | Allowed | Allowed | 401 | Returns the authenticated user profile and permitted mine scopes. |
+| `GET` | `/api/check-flags` | `scanners` | Scoped | Scoped | Scoped | Own Tunnel | 403 | 401 | Lists shift check-out exception flags scoped to caller's permitted tunnels. |
+| `PATCH` | `/api/check-flags/{flag_id}` | `scanners` | Scoped | Scoped | Scoped | Own Tunnel | 403 | 401 | Clears an open check flag with a manual review note and corrects tunnel headcount. |
+| `GET` | `/api/checkins` | `scanners` | Scoped | Scoped | Scoped | Own Tunnel | 403 | 401 | Lists recent check-in and check-out events scoped to permitted tunnels. |
+| `POST` | `/api/checkins` | `scanners` | Scoped | Scoped | Scoped | Own Tunnel | 403 | 401 | Records a QR badge scan event at the tunnel portal. |
+| `POST` | `/api/checkins/manual` | `scanners` | Scoped | Scoped | Scoped | Own Tunnel | 403 | 401 | Manually records a check-in or check-out event with an audit entry. |
+| `POST` | `/api/demo/seed` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Seeds demo coal mine dataset for local development (Manager only). |
+| `GET` | `/api/demo/status` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Returns current live simulation loop state (Manager only). |
+| `POST` | `/api/demo/step` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Triggers a single simulation telemetry step (Manager only). |
+| `POST` | `/api/demo/toggle-live` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Toggles periodic live packet generation (Manager only). |
+| `POST` | `/api/demo/trigger-hazard` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Injects a hazard override on a specific node (Manager only). |
+| `GET` | `/api/export.xlsx` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Excel workbook export with eager relationship loading (superiors only, mine scoped). |
+| `GET` | `/api/gateways` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Returns the gateway hierarchy and node inventory scoped to permitted mines (superiors only). |
+| `DELETE` | `/api/gateways/{gateway_id}` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Disables a hardware gateway (Manager only; sets active=false). |
+| `PATCH` | `/api/gateways/{gateway_id}` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Updates gateway name or active status (Manager only, within company and mine scope). |
+| `POST` | `/api/gateways/{gateway_id}/rotate-key` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Generates a new API key for the gateway, invalidating previous keys (Manager only). |
+| `GET` | `/api/headcount` | `scanners` | Scoped | Scoped | Scoped | Own Tunnel | 403 | 401 | Returns real-time underground tunnel headcount and active scheduled worker counts. |
+| `GET` | `/api/health` | `public` | Allowed | Allowed | Allowed | Allowed | Allowed | Allowed | Returns application health and subsystem statuses. |
+| `GET` | `/api/history` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Returns telemetry points ordered by time for Chart.js inspector (superiors only, mine scoped). |
+| `GET` | `/api/incidents` | `scanners` | Scoped | Scoped | Scoped | Own Tunnel | 403 | 401 | Lists incidents filtered by status and mine, scoped by role (with limit and offset). |
+| `POST` | `/api/incidents` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Superiors only: opens a new emergency or evacuation incident. |
+| `GET` | `/api/incidents/{id}` | `scanners` | Scoped | Scoped | Scoped | Own Tunnel | 403 | 401 | Retrieves an incident by ID with live roll call metrics. |
+| `PATCH` | `/api/incidents/{id}` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Superiors only: closes an incident or modifies siren state (locks incident FOR UPDATE). |
+| `GET` | `/api/incidents/{id}/roster` | `scanners` | Scoped | Scoped | Scoped | Own Tunnel | 403 | 401 | Lists the snapshot roll call personnel for an incident. |
+| `POST` | `/api/incidents/{id}/roster/{user_id}/account` | `scanners` | Scoped | Scoped | Scoped | Own Tunnel | 403 | 401 | Marks a worker accounted for in the incident roll call (locks incident FOR UPDATE). |
+| `POST` | `/api/ingest` | `public` | Allowed | Allowed | Allowed | Allowed | Allowed | Allowed | Ingests 38-byte raw binary telemetry packets from authenticated ESP32 gateways. |
+| `GET` | `/api/me/profile` | `any_authenticated` | Allowed | Allowed | Allowed | Allowed | Allowed | 401 | Returns caller's own worker profile as a flat object if worker (foreman/miner), otherwise an empty object {}. |
+| `GET` | `/api/me/shifts` | `any_authenticated` | Allowed | Allowed | Allowed | Allowed | Allowed | 401 | Returns caller's assigned shifts in a worker-safe view (omitting created_by). |
+| `GET` | `/api/mines` | `any_role_scoped` | Scoped | Scoped | Scoped | Scoped | Scoped | 401 | Returns mines permitted to the caller (all roles, scoped). |
+| `POST` | `/api/mines` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Creates a new coal mine site for the manager's company and assigns creator. |
+| `PUT` | `/api/mines/{id}/contacts` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Replaces all emergency key contacts for a mine (superiors only). |
+| `GET` | `/api/mines/{id}/headcount` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Returns live headcount and shift lookahead for a mine (superiors only). |
+| `GET` | `/api/mines/{id}/production` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Returns daily production records and monthly summary (superiors only). |
+| `PUT` | `/api/mines/{id}/production` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Upserts daily production entries (superiors only). |
+| `GET` | `/api/mines/{id}/profile` | `any_role_scoped` | Scoped | Scoped | Scoped | Scoped | Scoped | 401 | Returns full profile for superiors or trimmed worker-safe model for workers. |
+| `PATCH` | `/api/mines/{id}/profile` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Updates mine metadata with PATCH semantics (superiors only). |
+| `GET` | `/api/mines/{mine_id}/gateways` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Lists hardware gateways bound to a mine (Manager only; excludes key/hash). |
+| `POST` | `/api/mines/{mine_id}/gateways` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Registers a hardware gateway and displays its API key once (Manager only). |
+| `GET` | `/api/mines/{mine_id}/tunnels` | `any_role_scoped` | Scoped | Scoped | Scoped | Scoped | Scoped | 401 | Returns underground tunnels for a mine (all roles, scoped). |
+| `POST` | `/api/mines/{mine_id}/tunnels` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Adds a new underground tunnel to a mine (Manager only). |
+| `GET` | `/api/nodes` | `any_role_scoped` | Scoped | Scoped | Scoped | Scoped | Scoped | 401 | Returns latest telemetry and placement info scoped to permitted mines. |
+| `GET` | `/api/nodes/{node_id}/commands` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Superiors only: lists recent command history and delivery status for a sensor node. |
+| `POST` | `/api/nodes/{node_id}/commands` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Superiors only: creates a downlink command for a sensor node. |
+| `DELETE` | `/api/nodes/{node_id}/placement` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Removes a node from surface placement back to unplaced status (superiors only). |
+| `PATCH` | `/api/nodes/{node_id}/placement` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Assigns tunnel and geospatial coordinates to a node (superiors only, mine scoped). |
+| `GET` | `/api/notifications/config` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Returns stored notification channel settings (superiors only). |
+| `POST` | `/api/notifications/config` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Saves notification channel settings (superiors only). |
+| `POST` | `/api/notifications/test` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Superiors-only stub for testing alert delivery channels. |
+| `GET` | `/api/placements` | `any_role_scoped` | Scoped | Scoped | Scoped | Scoped | Scoped | 401 | Returns placed nodes and their coordinates scoped to permitted mines (any role). |
+| `GET` | `/api/reports` | `any_role_scoped` | Scoped | Scoped | Scoped | Scoped | Scoped | 401 | Lists reports scoped by user role. Superiors get full view; workers get own worker-safe view. |
+| `POST` | `/api/reports` | `any_role_scoped` | Scoped | Scoped | Scoped | Scoped | Scoped | 401 | Any logged-in user can raise a worker report. Returns worker-safe view. |
+| `PATCH` | `/api/reports/{id}` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Superiors only: advances report status to acknowledged or resolved. |
+| `GET` | `/api/unplaced` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Returns unplaced nodes reporting data in permitted mines (superiors only). |
+| `GET` | `/api/users` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Returns users belonging to the Manager's company. |
+| `POST` | `/api/users` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Creates a new subordinate user within the Manager's company. |
+| `DELETE` | `/api/users/{user_id}` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Soft deactivates a user (active=False). Never hard deletes. |
+| `PATCH` | `/api/users/{user_id}` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Updates user attributes, permitted mines, or triggers password reset. |
+| `GET` | `/api/workers` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Lists mine workers (foremen and miners) within caller's authorized scope. |
+| `GET` | `/api/workers/{worker_id}` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Returns detailed worker profile and shift history within caller's authorized scope. |
+| `DELETE` | `/api/workers/{worker_id}/badge` | `manager_or_foreman` | Allowed | 403 | 403 | Allowed | 403 | 401 | Revokes active QR badges for a worker (Manager, or Foreman for their current tunnel). |
+| `POST` | `/api/workers/{worker_id}/badge` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Issues a new cryptographic QR badge for an active foreman or miner (Manager only). |
+| `PUT` | `/api/workers/{worker_id}/profile` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Creates or updates a worker's profile (Manager only; audited without contact leaks). |
 
 ### Planned Routes (Future Steps)
 - Outbound alert notification delivery and logging (*Planned - Step 10*)
@@ -934,7 +1037,7 @@ Radio command sent by gateway over ESP-NOW:
    Because gateway firmware packets without nodes are not implemented in the frozen firmware struct, a gateway's `last_seen_at` reflects the arrival of its latest forwarded node packet. On quiet tunnels with no active placed nodes transmitting, a gateway could be marked offline unless periodic node transmissions occur or firmware sends status packets.
 
 ### 11.1. Firmware TODO (Owner)
-The following firmware features from Step 4 and Step 8 require modifying packet types or fields, which are frozen by design in this repository:
+The following firmware features from Steps 4, 7, and 8 require modifying hardware logic, packet types, or fields, which are frozen by design in this repository:
 - **Node Heartbeat Timing**: Keep node transmission interval <= 10s (or <= 30s) so the offline threshold has at least 3 missed packets margin.
 - **Gateway Heartbeats**: ESP32 gateway must transmit a periodic keepalive status packet over HTTP even when no child nodes are transmitting, preventing false gateway-offline timeouts on idle tunnels.
 - **ESP Task Watchdog & Sensor-Fault Flag**: Requires additional bit flags in the node telemetry packet payload.
@@ -942,6 +1045,9 @@ The following firmware features from Step 4 and Step 8 require modifying packet 
 - **Node Physical SOS Button**: Hardware should require a 2s press-and-hold to prevent accidental trigger shock false alarms.
 - **Transmission Bursts**: Node should transmit a burst of 3 packets 100ms apart upon SOS button trigger, and continue transmitting telemetry with `sos_active=1` bit set until hardware reset or timeout.
 - **Gateway Retry Contract**: On HTTP 503 responses to SOS packets (`{"detail": "SOS handling failed"}`), gateway should retry posting the SOS packet after the specified `Retry-After` interval (2s) without dropping sensor readings.
+- **Downlink Buzzer Command Dispatch**: Gateway firmware must parse HTTP 200 plain-text response bodies (`CMD,node_no,ACTION,seq\n`) and forward 10-byte binary command packets over ESP-NOW to target nodes.
+- **Command Echo Acknowledgment**: Sensor nodes must update internal state upon receiving downlink radio commands and echo the received command `seq` in subsequent 38-byte telemetry packets via the `last_cmd_seq` field.
+- **Acoustic Buzzer Safety Silence Timer**: Hardware sensor nodes should implement an onboard auto-silence timer (60-120s) so unacked or abandoned buzzer alarms do not sound indefinitely during radio link interruptions.
 - **SOS_ACK Out of Scope**: Downlink radio acknowledgment (`SOS_ACK`) back to the node is out of scope (requires firmware modification and new radio packet definitions).
 
 ### 11.2. Device SOS Path, Privacy, and Ingest Retries (Step 8)
@@ -972,6 +1078,27 @@ The following firmware features from Step 4 and Step 8 require modifying packet 
 ---
 
 ## 12. Changelog
+
+### 2026-11-24 - Phase C: Final Hardening, Operational Tooling, and Architecture Verification
+- **Database Backup & Recovery Tooling**:
+  - `tools/backup_db.sh`: Automated backup script using `pg_dump -Fc`, connection string parsing, password masking, non-zero error exits, and rolling 14-day retention pruning.
+  - `tools/restore_db.md`: Comprehensive restoration runbook covering clean restore (`pg_restore --clean --if-exists`), fresh database drop/create, post-restore `alembic check` drift verification, and sanity SQL queries.
+- **Migration Round-Trip Verification**:
+  - Successfully executed throwaway DB test (`alembic downgrade base` -> `alembic upgrade head` -> `alembic check` clean with zero schema drift).
+- **Security & Secrets Hygiene**:
+  - `git ls-files` scan for secrets/keys/credentials completely clean (0 matches).
+  - `git grep` credential scan across non-test code clean (0 matches).
+  - `.gitignore` updated to cover `backups/` and `*.dump`.
+- **Dependency Pinning & Integrity**:
+  - Fully pinned all production and development dependencies in `server/requirements.txt` and `server/requirements-dev.txt` using `==`.
+  - Verified `pip check` reports `No broken requirements found.`
+- **Dead Code Cleanup & Pyflakes Verification**:
+  - Executed `pyflakes server/app`: resolved unused imports, resolved unused variables, and fixed undefined reference in `services/flag_service.py` (`now = clock.utcnow()`).
+  - Total pyflakes warnings across application package: 0.
+- **Automated Route Matrix Generation**:
+  - Created `tools/generate_route_table.py` which inspects `app.openapi()` and `POLICY_TABLE`, guaranteeing 100% coverage across all 71 API routes and 6 user roles.
+- **Test Suite Regression**:
+  - All 161 automated test cases passing in pytest (0 failures).
 
 ### 2026-11-24 - Step 9: Mine Profile, Emergency Contacts Hierarchy, and Output Tracking
 - **Five Profile Groups**:

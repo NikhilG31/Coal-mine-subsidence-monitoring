@@ -5,7 +5,7 @@ Must NOT execute raw database transactions directly, perform socket I/O, or leak
 """
 from typing import Optional, Union
 import zoneinfo
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.config import HOURS_TIMEZONE
@@ -16,7 +16,6 @@ from app.schemas.mine_profile import (
     HeadcountResponse,
     ProductionMonthResponse,
     ReplaceContactsRequest,
-    SuperiorContactView,
     SuperiorMineProfileResponse,
     UpdateMineProfileRequest,
     UpsertProductionRequest,

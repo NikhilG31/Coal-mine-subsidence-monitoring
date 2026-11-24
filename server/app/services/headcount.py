@@ -12,7 +12,6 @@ from app.models.assignment import Assignment
 from app.models.check_event import CheckEvent
 from app.models.tunnel import Tunnel
 from app.models.user import User, UserMine
-from app.models.worker_profile import WorkerProfile
 from app.services import clock
 
 

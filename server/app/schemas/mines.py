@@ -3,7 +3,7 @@
 Owns input validation rules for mine creation, tunnel allocation, and gateway registration.
 Must NOT execute database transactions, verify passwords, or handle HTTP routing directly.
 """
-from typing import List, Optional
+from typing import Optional
 from pydantic import BaseModel, field_validator, model_validator
 
 from app.services.packet_codec import norm_mac

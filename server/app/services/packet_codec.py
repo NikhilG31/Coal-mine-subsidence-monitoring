@@ -5,7 +5,7 @@ Must NOT interact with database sessions or import FastAPI components.
 """
 import math
 import struct
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 # Wire format: <6sBIfffBffBBBBH (38 bytes, little-endian, no padding)
 # gateway_mac (6s), node_id (B), counter (I), tiltX (f), tiltY (f),

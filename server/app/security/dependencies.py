@@ -4,20 +4,27 @@ Owns get_current_user, require_role, company and mine scoping, and the force-pas
 Must NOT handle HTTP response cookie setting directly or manage rate limit buckets.
 """
 import logging
-from typing import Callable, List, Optional
+from typing import Callable, List
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.mine import Mine
 from app.models.user import User, UserMine
-from app.security.roles import ROLE_MANAGER, SUPERIOR_ROLES, role_group
+from app.security.roles import ROLE_MANAGER
 from app.security.tokens import (
     COOKIE_NAME,
-    decode_session_token,
     decode_session_token_payload,
 )
+from app.services.tunnel_scope import get_visible_tunnel_ids
 
+__all__ = [
+    "get_current_user",
+    "get_allowed_mine_ids",
+    "get_visible_tunnel_ids",
+    "require_role",
+    "security_logger",
+]
 security_logger = logging.getLogger("security")
 security_logger.setLevel(logging.INFO)
 security_logger.disabled = False
@@ -126,6 +133,3 @@ def get_allowed_mine_ids(db: Session, user: User) -> List[int]:
         .all()
     )
     return [m[0] for m in assigned]
-
-
-from app.services.tunnel_scope import get_visible_tunnel_ids

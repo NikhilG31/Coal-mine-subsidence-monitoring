@@ -5,7 +5,7 @@ Must NOT handle HTTP requests, import FastAPI components, or mutate raw sensor t
 """
 import datetime
 import logging
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -29,6 +29,19 @@ from app.services.roll_call_service import (
     mark_accounted,
     mark_accounted_on_exit,
 )
+
+__all__ = [
+    "IncidentConflictError",
+    "IncidentError",
+    "add_late_arrival",
+    "mark_accounted",
+    "mark_accounted_on_exit",
+    "get_affected_nodes",
+    "open_incident",
+    "auto_open_for_critical",
+    "close_incident",
+    "set_siren",
+]
 
 logger = logging.getLogger(__name__)
 

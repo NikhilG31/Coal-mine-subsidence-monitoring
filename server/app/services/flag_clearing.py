@@ -5,7 +5,7 @@ Must NOT handle HTTP requests, import FastAPI components, or leak note text into
 """
 import datetime
 from typing import Optional
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 
 from app.models.assignment import Assignment
 from app.models.check_event import CheckEvent

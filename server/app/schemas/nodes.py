@@ -3,7 +3,7 @@
 Owns WorkerNodeView and SuperiorNodeView response models preventing field leakage.
 Must NOT execute database queries or perform session transactions.
 """
-from typing import Any, List, Optional, Union
+from typing import List, Optional, Union
 from pydantic import BaseModel, ConfigDict
 
 

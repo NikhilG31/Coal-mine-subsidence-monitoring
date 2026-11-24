@@ -3,7 +3,6 @@
 Owns GET /api/export.xlsx with superior role enforcement and tenant mine scoping.
 Must NOT modify database records or bypass relationship query optimization.
 """
-import datetime
 import io
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Response

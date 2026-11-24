@@ -3,8 +3,6 @@
 Owns /api/mines, /api/mines/{id}/tunnels, and /api/mines/{id}/gateways endpoints.
 Must NOT handle telemetry packet ingestion, raw socket I/O, or worker shift management.
 """
-import datetime
-from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 from app.database import get_db

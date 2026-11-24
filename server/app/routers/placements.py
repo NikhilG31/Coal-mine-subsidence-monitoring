@@ -3,7 +3,6 @@
 Owns GET /api/placements, GET /api/unplaced, and PATCH/DELETE /api/nodes/{id}/placement.
 Enforces superior authorization, tenant mine scoping, and placement completeness.
 """
-import datetime
 import time
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException

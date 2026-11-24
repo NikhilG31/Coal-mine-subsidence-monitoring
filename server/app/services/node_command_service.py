@@ -4,7 +4,7 @@ Owns creating and sequencing node commands, checking pending commands for gatewa
 Must NOT handle HTTP requests, import FastAPI components, or mutate reading packets.
 """
 import datetime
-from typing import List, Optional
+from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.config import COMMAND_TTL_S

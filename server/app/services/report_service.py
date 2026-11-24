@@ -5,7 +5,7 @@ Must NOT handle HTTP requests, import FastAPI components, or format web presenta
 """
 import datetime
 from collections import deque
-from typing import Any, Deque, Dict, List, Optional
+from typing import Deque, Dict, List, Optional
 from sqlalchemy.orm import Session, joinedload
 
 from app.config import (
@@ -15,7 +15,7 @@ from app.config import (
 from app.models.mine import Mine
 from app.models.node import Node
 from app.models.tunnel import Tunnel
-from app.models.user import User, UserMine
+from app.models.user import User
 from app.models.worker_report import WorkerReport
 from app.security.dependencies import get_allowed_mine_ids
 from app.security.roles import SUPERIOR_ROLES

@@ -5,7 +5,7 @@ Must NOT execute raw database mutations directly or evaluate offline thresholds.
 """
 import datetime
 from typing import List, Optional, Union
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 

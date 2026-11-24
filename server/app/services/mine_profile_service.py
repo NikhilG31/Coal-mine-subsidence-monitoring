@@ -4,7 +4,7 @@ Owns five-group profile construction, role-based worker model projection, and PA
 Must NOT handle HTTP requests, import FastAPI components, or leak sensitive telemetry to workers.
 """
 import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 import zoneinfo
 from sqlalchemy.orm import Session
 

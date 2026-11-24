@@ -3,7 +3,6 @@
 Owns cryptographic badge token generation, SHA-256 hash storage, QR SVG rendering, and revocation.
 Must NOT handle HTTP requests, import FastAPI components, or store/log plaintext tokens.
 """
-import datetime
 import hashlib
 import secrets
 from typing import Optional, Tuple

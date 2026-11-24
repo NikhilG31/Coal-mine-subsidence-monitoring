@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.gateway import Gateway
 from app.models.node import Node
-from app.models.reading import Reading
 from app.models.user import User
 from app.schemas.nodes import NodesResponse, SuperiorNodeView, WorkerNodeView
 from app.security.dependencies import (

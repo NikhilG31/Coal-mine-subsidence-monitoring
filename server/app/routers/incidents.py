@@ -16,7 +16,6 @@ from app.models.incident_roster import IncidentRoster
 from app.models.mine import Mine
 from app.models.tunnel import Tunnel
 from app.models.user import User
-from app.models.worker_profile import WorkerProfile
 from app.schemas.incidents import (
     IncidentCreateRequest,
     IncidentDetailResponse,
@@ -26,7 +25,6 @@ from app.schemas.incidents import (
 )
 from app.security.dependencies import (
     get_allowed_mine_ids,
-    get_current_user,
     require_role,
 )
 from app.security.roles import ROLE_FOREMAN, SUPERIOR_ROLES

@@ -4,7 +4,6 @@ Owns REST endpoints for creating buzzer commands and inspecting command history 
 Must NOT execute raw binary serializations or manipulate database schemas.
 """
 import datetime
-from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session, joinedload
 
@@ -22,7 +21,6 @@ from app.schemas.node_commands import (
 )
 from app.security.dependencies import (
     get_allowed_mine_ids,
-    get_current_user,
     require_role,
 )
 from app.security.roles import SUPERIOR_ROLES

@@ -4,12 +4,11 @@ Owns POST /api/checkins, POST /api/checkins/manual, GET /api/checkins, and GET /
 Must NOT define database models, calculate raw sensor physics, or store unhashed badge tokens.
 """
 import datetime
-from typing import Any, Dict, List, Optional
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, joinedload
 
-from app.config import CHECK_FLAG_OVERDUE_HOURS
 from app.database import get_db
 from app.models.check_event import CheckEvent
 from app.models.tunnel import Tunnel
@@ -24,7 +23,6 @@ from app.schemas.checkins import (
 from app.security.dependencies import (
     get_allowed_mine_ids,
     require_role,
-    security_logger,
 )
 from app.security.rate_limit import (
     check_scan_rate_limit,

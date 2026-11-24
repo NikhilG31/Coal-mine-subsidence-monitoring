@@ -3,15 +3,13 @@
 Owns GET /api/alerts and POST /api/alerts/{alert_id}/ack endpoints with superior role authorization.
 Must NOT deliver third-party webhooks or evaluate offline timeouts.
 """
-import datetime
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
 from app.models.alert import Alert
-from app.models.mine import Mine
 from app.models.user import User
 from app.security.dependencies import get_allowed_mine_ids, require_role
 from app.security.roles import SUPERIOR_ROLES

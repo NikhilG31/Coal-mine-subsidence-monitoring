@@ -3,7 +3,6 @@
 Owns /api/auth/* endpoints (login, logout, me, change-password).
 Must NOT handle user administration or bypass security dependencies.
 """
-from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session

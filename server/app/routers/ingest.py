@@ -3,7 +3,6 @@
 Owns the POST /api/ingest endpoint, gateway authentication, and HTTP error translations.
 Must NOT execute raw database queries directly or alter packet parsing formats.
 """
-import datetime
 import logging
 import time
 from typing import Dict, Optional
@@ -152,7 +151,7 @@ async def ingest(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except SOSHandlingError as e:
+    except SOSHandlingError:
         raise HTTPException(status_code=503, detail="SOS handling failed")
     except HTTPException:
         raise

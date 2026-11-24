@@ -5,7 +5,7 @@ Must NOT handle HTTP requests, import FastAPI components, or bypass mine scoping
 """
 import datetime
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 import zoneinfo
 from decimal import Decimal
 from sqlalchemy.dialects.postgresql import insert as pg_insert
