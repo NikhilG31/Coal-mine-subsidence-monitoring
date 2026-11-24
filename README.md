@@ -57,7 +57,8 @@ coal-mine-subsidence-monitoring/
 │   │       ├── c1506e641433_step5_workers_assignments_shifts.py # Worker profiles, assignments, and GIST exclusion constraint
 │   │       ├── e2b8b74826ca_step6_qr_checkin_headcount_flags.py # QR tokens, check events, check flags, partial unique indexes
 │   │       ├── a69df82fa18b_step7_incidents_roll_call_node_commands.py # Incidents, incident roster snapshot, node commands table
-│   │       └── 5d042c33b47c_step8_worker_reports_and_sos.py # Worker reports, device SOS, and partial unique index on open SOS incidents
+│   │       ├── 5d042c33b47c_step8_worker_reports_and_sos.py # Worker reports, device SOS, and partial unique index on open SOS incidents
+│   │       └── 343347cf01f6_step9_mine_profile_and_production.py # Evacuation notes, emergency contacts, and daily production
 │   ├── app/                                      # Application package
 │   │   ├── __init__.py                           # App package root
 │   │   ├── config.py                             # Centralized environment variable loader (no defaults for DB)
@@ -80,7 +81,9 @@ coal-mine-subsidence-monitoring/
 │   │   │   ├── gateway.py                        # Hardware gateway table
 │   │   │   ├── incident.py                       # Emergency incident entity with status check & auto partial unique index
 │   │   │   ├── incident_roster.py                # Roll call roster snapshot entity with accounting timestamps
-│   │   │   ├── mine.py                           # Coal mine sites table
+│   │   │   ├── mine.py                           # Coal mine sites table with evacuation notes
+│   │   │   ├── mine_contact.py                   # Mine emergency contact phone hierarchy table
+│   │   │   ├── mine_production.py                # Daily planned and actual coal production table
 │   │   │   ├── node.py                           # Sensor nodes table (1..255 range constraint)
 │   │   │   ├── node_command.py                   # Downlink node command entity with sequence wrapping & pending partial index
 │   │   │   ├── qr_token.py                       # QR badge token entity with partial unique active index
@@ -103,6 +106,7 @@ coal-mine-subsidence-monitoring/
 │   │   │   ├── incidents.py                      # POST /api/incidents, GET /api/incidents, GET/POST roster, PATCH close, PATCH siren
 │   │   │   ├── ingest.py                         # POST /api/ingest 38-byte binary receiver & downlink CMD text/plain response
 │   │   │   ├── me.py                             # GET /api/me/shifts, GET /api/me/profile
+│   │   │   ├── mine_profile.py                   # GET/PATCH /api/mines/{id}/profile, PUT contacts, GET headcount, GET/PUT production
 │   │   │   ├── mines.py                          # GET/POST /api/mines, /api/mines/{id}/tunnels, /api/mines/{id}/gateways
 │   │   │   ├── node_commands.py                  # POST /api/nodes/{id}/commands manual buzzer trigger
 │   │   │   ├── nodes.py                          # GET /api/nodes telemetry list
@@ -115,6 +119,7 @@ coal-mine-subsidence-monitoring/
 │   │   │   ├── __init__.py                       # Package exports
 │   │   │   ├── checkins.py                       # Badge, scan, headcount, and check flag schemas
 │   │   │   ├── incidents.py                      # IncidentOpenRequest, IncidentResponse, RosterMemberResponse, CloseIncidentRequest
+│   │   │   ├── mine_profile.py                   # Mine profile 5-group schemas, worker-safe view, contacts & production schemas
 │   │   │   ├── mines.py                          # Mine, tunnel, and gateway creation request schemas
 │   │   │   ├── node_commands.py                  # CreateCommandRequest, CommandResponse
 │   │   │   ├── nodes.py                          # WorkerNodeView (strict leakage prevention) & SuperiorNodeView
@@ -143,10 +148,14 @@ coal-mine-subsidence-monitoring/
 │   │   │   ├── incident_service.py               # Incident lifecycle, roll call snapshot, manual/gate accounting, auto-critical open
 │   │   │   ├── ingest_service.py                 # Packet verification, deduplication, persistence, and downlink ack
 │   │   │   ├── latest_readings.py                # PostgreSQL distinct_on query optimizer for telemetry readings
+│   │   │   ├── mine_contacts_service.py          # Atomic emergency contacts replace and rank uniqueness validation
+│   │   │   ├── mine_headcount_service.py         # Headcount by shift & tunnel with lookahead in constant queries
+│   │   │   ├── mine_profile_service.py           # Superior 5-group assembly, trimmed worker-safe model, profile updates
 │   │   │   ├── node_command_service.py           # Command queueing, sequence wrapping, line encoding, echo acknowledgment
 │   │   │   ├── node_placement.py                 # Node placement completeness helpers and expressions
 │   │   │   ├── node_serializer.py                # Telemetry dictionary serializer (superior & worker views)
 │   │   │   ├── packet_codec.py                   # 38-byte struct parse and pack definition
+│   │   │   ├── production_service.py             # Monthly production upsert, calendar month aggregation, independent sums
 │   │   │   ├── report_service.py                 # Worker problem reports, rate limiting, and resolution lifecycle
 │   │   │   ├── roll_call_service.py              # Evacuation roll call accounting and late arrival snapshot helpers
 │   │   │   ├── shift_service.py                  # Shift creation, duration checks, overlap detection, exclusion constraint handling
@@ -162,6 +171,7 @@ coal-mine-subsidence-monitoring/
 │   │       ├── headcount_flags.js                # Badge modal, live headcount polling, and flag resolution UI
 │   │       ├── incidents.js                      # Emergency incidents, roll call roster, and buzzer control UI
 │   │       ├── index.html                        # Dashboard HTML layout
+│   │       ├── mine_profile.js                   # Mine profile 5-card editor, contacts rank ordering, production SVG chart
 │   │       ├── reports.js                        # Worker hazard reporting, superior inbox, and persistent SOS banner
 │   │       └── style.css                         # Neo-Brutalist dashboard styles
 │   └── tests/                                    # Pytest test suite (runs on test database)
@@ -179,7 +189,8 @@ coal-mine-subsidence-monitoring/
 │       ├── test_step7_hardening.py               # Step 7.5 gateway scoping, siren cycle, auto-incidents, retention tests
 │       ├── test_step7_incidents_and_commands.py  # Step 7 emergency incidents, roll call snapshot, commands, and siren tests
 │       ├── test_step8_followup_sos.py            # Step 8 follow-up SOS incident idempotency, merge, and retry tests
-│       └── test_step8_reports_and_sos.py         # Step 8 worker reports, device SOS, merge window, and flood guard tests
+│       ├── test_step8_reports_and_sos.py         # Step 8 worker reports, device SOS, merge window, and flood guard tests
+│       └── test_step9_mine_profile_and_production.py # Step 9 profile 5 groups, worker view, contacts, production sums
 └── tools/                                        # Developer and project reporting tooling
     ├── build_synopsis.py                         # Synopsis document generation tool
     └── render_pages.py                           # PDF page rendering utility
@@ -249,6 +260,7 @@ Configuration is loaded from `.env` in the repository root using `python-dotenv`
 | `SOS_INCIDENT_SIREN` | Step 8 | Whether automatically created device SOS incidents activate sirens immediately | `false` |
 | `REPORT_RATE_PER_HOUR` | Step 8 | Maximum problem reports a single worker user can submit per hour before 429 rate limit (min 1, max 100) | `20` |
 | `REPORT_MAX_AGE_DAYS_WORKER_VIEW` | Step 8 | Maximum lookback age in days for reports visible in worker self-service view (min 1, max 365) | `90` |
+| `SHIFT_LOOKAHEAD_H` | Step 9 | Hours ahead to look for upcoming shift assignments in mine headcount breakdown (positive integer) | `12` |
 
 ---
 
@@ -313,7 +325,7 @@ python -m pytest -v
 
 ## 6. Data Model
 
-The schema is managed strictly via Alembic migrations. The database contains these 15 core tables:
+The schema is managed strictly via Alembic migrations. The database contains these 21 core tables:
 
 ### 1. `companies`
 - `id` (`Integer`, PK, autoincrement)
@@ -329,6 +341,7 @@ The schema is managed strictly via Alembic migrations. The database contains the
 - `status` (`String(32)`, nullable=False, server_default=`'active'`, check: `'active'`, `'maintenance'`, `'suspended'`, `'closed'`)
 - `method` (`String(32)`, nullable=False, server_default=`'underground'`, check: `'opencast'`, `'underground'`, `'mixed'`)
 - `area_ha`, `max_depth_m`, `lat`, `lon` (`Float`, nullable=True)
+- `evacuation_notes` (`Text`, nullable=True, check: `char_length(evacuation_notes) <= 2000`)
 - **Constraint**: `UNIQUE (company_id, name)` named `uq_mines_company_name`
 
 ### 3. `tunnels`
@@ -579,6 +592,31 @@ The schema is managed strictly via Alembic migrations. The database contains the
   - `ix_worker_reports_user_created`: `(user_id, created_at DESC)`
   - `ix_worker_reports_node_signal`: `(node_id, last_signal_at DESC)`
 
+### 20. `mine_contacts`
+- `id` (`Integer`, PK, serial)
+- `mine_id` (`Integer`, FK -> `mines.id` ON DELETE CASCADE, nullable=False, index)
+- `role` (`String(20)`, nullable=False, check constraint: `role IN ('shift_supervisor', 'safety_officer', 'rescue_station', 'other')`)
+- `name` (`String(255)`, nullable=False)
+- `phone` (`String(32)`, nullable=False)
+- `rank` (`SmallInteger`, nullable=False, check constraint: `rank BETWEEN 1 AND 20`)
+- **Constraint**: `UNIQUE (mine_id, rank)` named `uq_mine_contacts_rank`
+
+### 21. `mine_production`
+- `mine_id` (`Integer`, FK -> `mines.id` ON DELETE CASCADE, nullable=False)
+- `day` (`Date`, nullable=False)
+- `planned_t` (`Numeric(12,2)`, nullable=True, check constraint: `planned_t >= 0`)
+- `actual_t` (`Numeric(12,2)`, nullable=True, check constraint: `actual_t >= 0`)
+- `updated_by` (`Integer`, FK -> `users.id` ON DELETE SET NULL, nullable=True)
+- `updated_at` (`TIMESTAMPTZ`, nullable=False, server_default=`now()`)
+- `PRIMARY KEY (mine_id, day)`
+- **Constraint**: `CHECK (planned_t IS NOT NULL OR actual_t IS NOT NULL)` named `ck_mine_production_has_metric`
+
+> **Mine Profile and Output Tracking (`services/mine_profile_service.py`, `services/production_service.py`, `services/mine_headcount_service.py`, `services/mine_contacts_service.py`)**:  
+> - **Five Profile Groups**: Identity & status (`id`, `name`, `status`, `lat`, `lon`, `evacuation_notes`), company & classification (`company_name`, `subsidiary`, `method`, `area_ha`, `max_depth_m`), live headcount (`totals` and per-tunnel breakdown with `SHIFT_LOOKAHEAD_H` lookahead), monthly production (`planned_total_t`, `actual_total_t`, `variance_t`, `achievement_pct`, `reported_days`), and emergency contacts list ordered by call hierarchy `rank`.
+> - **Independent Production Sums**: Monthly totals (`planned_total_t` and `actual_total_t`) are summed independently across calendar days of the month in `HOURS_TIMEZONE`. A day with only planned or only actual contributes directly to its respective total without requiring matching pairs.
+> - **Worker-Safe View & Emergency Contacts**: Workers receive a trimmed model (`id`, `name`, `status`, `evacuation_notes`, `contacts`, `current_tunnel`). Corporate metrics, production, headcount, depth, area, and lat/lon are omitted. Mine emergency contacts (with phone numbers) are visible to workers by design to enable rapid emergency escalation.
+> - **Atomic Contacts Replacement**: Replacing mine contacts validates ranks 1..20 uniqueness, role enum, and phone format before atomically deleting and recreating records within a single transaction. Audit logs record contact count only, never names or phone numbers.
+
 > **Worker Reports Lifecycle and Device SOS Path (`services/report_service.py` & `services/sos_service.py`)**:  
 > - **Worker Hazard Reports**: Any logged-in user can submit problem reports (`injury`, `equipment_fault`, `gas_smell`, `need_help`, `sos`). Submitting `type='sos'` strictly forces `severity='critical'`. Rate limited per user to `REPORT_RATE_PER_HOUR` (default 20/hr, returns 429 with `Retry-After`).
 > - **Superior Inbox & Status Lifecycle**: Reports move strictly `open -> acknowledged -> resolved`. Resolving directly from `open` records both acknowledgment and resolution simultaneously. Any backward or duplicate transition returns HTTP 409 `{"code": "invalid_transition"}`.
@@ -768,13 +806,18 @@ Radio command sent by gateway over ESP-NOW:
 | `PATCH` | `/api/incidents/{id}` | Superiors Only (Manager, Safety Officer, Engineer) | JSON: `siren` (bool), `close` (bool), `confirm_unaccounted` (bool), `close_note` (str). Row locked FOR UPDATE. Closing with unaccounted workers without confirmation returns 409 `{"code": "unaccounted_workers", "count": N}`. Records audit (`incident.close`, `incident.siren`). | `{"incident": {...}}` | `200`, `400`, `401`, `403`, `404`, `409`, `422` |
 | `POST` | `/api/nodes/{node_id}/commands` | Superiors Only (Manager, Safety Officer, Engineer) | Path param. Node must be placed (`is_placed(node)`) and gateway active. JSON: `cmd` (`buzzer_on`, `buzzer_off`, `resume`). Enforces single pending per node. Returns `status: "pending"`. Records audit (`command.create`). | `{"command": {...}, "status": "pending"}` | `201`, `400`, `401`, `403`, `404`, `422` |
 | `GET` | `/api/nodes/{node_id}/commands` | Superiors Only (Manager, Safety Officer, Engineer) | Path param. Scoped through node gateway mine. Returns recent commands with status (`pending`, `acked`, `expired`, `superseded`). | `{"commands": [...]}` | `200`, `401`, `403`, `404` |
+| `GET` | `/api/mines/{id}/profile` | Any Authenticated User | Path param. Superiors get full model (5 groups: identity, classification, headcount with lookahead, production current month summary, contacts hierarchy). Foremen & miners get trimmed worker-safe model (`id`, `name`, `status`, `evacuation_notes`, `contacts`, `current_tunnel`). Extra fields forbidden. | `SuperiorMineProfileResponse` or `WorkerMineProfileResponse` | `200`, `401`, `404` |
+| `PATCH` | `/api/mines/{id}/profile` | Superiors Only (Manager, Safety Officer, Engineer) | JSON: `name?`, `subsidiary?`, `status?`, `method?`, `area_ha?`, `max_depth_m?`, `lat?`, `lon?`, `evacuation_notes?`. Validates coordinate pairs, area/depth >= 0, duplicate name 409. Records audit (`mine.update`) with field names only. | `SuperiorMineProfileResponse` | `200`, `400`, `401`, `403`, `404`, `409`, `422` |
+| `PUT` | `/api/mines/{id}/contacts` | Superiors Only (Manager, Safety Officer, Engineer) | JSON: `{"contacts": [{"role", "name", "phone", "rank"}]}`. Replaces all contacts atomically in 1 transaction. Ranks unique 1..20, phone format validated. Records audit (`mine.contacts_update`) with `{count}` only. | `{"contacts": [...]}` | `200`, `400`, `401`, `403`, `404`, `422` |
+| `GET` | `/api/mines/{id}/headcount` | Superiors Only (Manager, Safety Officer, Engineer) | Path param. Scoped. Returns totals and per-tunnel breakdown `{tunnel_id, tunnel_name, inside, scheduled_now, upcoming}` using `inside_now` in constant queries. | `{"totals": {...}, "tunnels": [...]}` | `200`, `401`, `403`, `404` |
+| `GET` | `/api/mines/{id}/production` | Superiors Only (Manager, Safety Officer, Engineer) | Query: `month=YYYY-MM` (default current calendar month in `HOURS_TIMEZONE`). Returns daily entries and monthly summary (`planned_total_t`, `actual_total_t`, `variance_t`, `achievement_pct`, `reported_days`). Planned and actual summed independently. | `{"month": str, "days": [...], "summary": {...}}` | `200`, `401`, `403`, `404`, `422` |
+| `PUT` | `/api/mines/{id}/production` | Superiors Only (Manager, Safety Officer, Engineer) | JSON: `{"entries": [{"day", "planned_t?", "actual_t?"}]}`. 1-62 entries, no duplicates, max 5 years past, future actual_t rejected in `HOURS_TIMEZONE`. Audit (`mine.production_update`) with `{days: n, months: [...]}`. | `{"updated": int, "summaries": [...]}` | `200`, `400`, `401`, `403`, `404`, `422` |
 | `POST` | `/api/reports` | Any Authenticated User | JSON: `type` (`injury`, `equipment_fault`, `gas_smell`, `need_help`, `sos`), `severity` (`low`, `medium`, `high`, `critical`), `tunnel_id`, `description`. `type='sos'` forces `critical`. Rate limited to 20/hr (429 with `Retry-After`). Extra fields forbidden (422). Records audit (`report.create`). | `WorkerReportView` | `201`, `400`, `401`, `404`, `422`, `429` |
 | `GET` | `/api/reports` | Any Authenticated User | Query: `status` (`open`, `acknowledged`, `resolved`), `type`, `mine_id`, `tunnel_id`, `limit` (default 100, max 500), `offset`. Superiors get `SuperiorReportView` (telemetry, actor names, node/gateway, repeat count); workers get `WorkerReportView` (sensitive metadata strictly omitted, own reports only). Gateway MAC never returned. | List of `SuperiorReportView` or `WorkerReportView` | `200`, `401`, `404`, `422` |
 | `PATCH` | `/api/reports/{id}` | Superiors Only (Manager, Safety Officer, Engineer; others 403) | JSON: `status` (`acknowledged`, `resolved`), `resolution_note` (max 500 chars). Row locked FOR UPDATE. Direct `open -> resolved` records both. Backwards/repeated transitions return 409 `{"code": "invalid_transition"}`. Records audit (`report.acknowledge`, `report.resolve`). | `SuperiorReportView` | `200`, `400`, `401`, `403`, `404`, `409`, `422` |
 | `GET` | `/` | Browser | None | HTML dashboard (`index.html`) | `200` |
 
 ### Planned Routes (Future Steps)
-- `GET /api/mines/{id}/profile` (*Planned - Step 9*)
 - Outbound alert notification delivery and logging (*Planned - Step 10*)
 
 ---
@@ -864,7 +907,7 @@ Radio command sent by gateway over ESP-NOW:
 | **Step 7.5** | Hardening and Phase A Fixes | **Done** | Gateway-scoped node commands, siren reliability (extend pending, refresh acked > 30s), cross-tunnel scan-out roll call accounting in open incidents, auto-incident config & ingest matrix, incident row locking FOR UPDATE, uniform 409 body shape, command status superseded, 30-day command retention cleanup. | 2026-11-23 |
 | **Step 8** | Worker reports and SOS | **Done** | Report form, inbox, status flow, node SOS button and SOS packet. Report moves through workflow; button press shows as SOS report within seconds. | 2026-11-23 |
 | **Step 8.5** | Step 8 Follow-up & SOS Hardening | **Done** | SOS incident idempotency on `uq_incidents_open_sos`, resolved report guard, 503 retry contract without reading loss, duplicate reading SOS trigger, and comprehensive follow-up test suite. | 2026-11-24 |
-| **Step 9** | Mine profile and output tracking | *Not started* | Profile fields, contacts, plan vs actual. Mine page shows all five profile groups. | — |
+| **Step 9** | Mine profile and output tracking | **Done** | Profile fields, contacts hierarchy, plan vs actual output. Mine page shows all five profile groups. Superiors edit within scope; workers see trimmed worker-safe model. | 2026-11-24 |
 | **Step 10** | Outbound notifications and extras | *Not started* | Telegram/WhatsApp outbound dispatch, PDF export, WebSocket updates. | — |
 
 ---
@@ -916,9 +959,36 @@ The following firmware features from Step 4 and Step 8 require modifying packet 
   - **Gateway MAC Confidentiality**: Physical gateway MAC addresses are internal backhaul identifiers and are never exposed in any report API response.
   - **Audit Privacy**: Audit logs (`report.create`, `report.acknowledge`, `report.resolve`, `sos.device`) record entity IDs and timestamps only, strictly omitting free-text descriptions and resolution notes.
 
+### 11.3. Mine Profile and Production Tracking (Step 9)
+1. **No Production History Edits Audit Beyond Counts**:
+   Audit logs (`mine.production_update`) record the number of days modified and the list of affected calendar months, not cell-level old vs new tonne values.
+2. **Planned and Actual Summed Independently**:
+   Monthly totals (`planned_total_t` and `actual_total_t`) are calculated by independently summing daily values across the calendar month in `HOURS_TIMEZONE`. Days with only planned or only actual contribute to their respective total without requiring matching pairs.
+3. **No Shift Templates**:
+   Underground shift assignments are created with explicit start and end timestamps rather than recurring shift schedule templates.
+4. **No CSV Import**:
+   Daily planned and actual output is logged via JSON API or through the dashboard mine profile modal; bulk file import (e.g. CSV or Excel) is not implemented.
+
 ---
 
 ## 12. Changelog
+
+### 2026-11-24 - Step 9: Mine Profile, Emergency Contacts Hierarchy, and Output Tracking
+- **Five Profile Groups**:
+  - Identity and status (`id`, `name`, `status`, `lat`, `lon`, `evacuation_notes`).
+  - Company and classification (`company_name`, `subsidiary`, `method`, `area_ha`, `max_depth_m`).
+  - Headcount breakdown by shift and tunnel with `SHIFT_LOOKAHEAD_H` lookahead (totals + per-tunnel inside, scheduled now, upcoming).
+  - Monthly coal production summary (`planned_total_t`, `actual_total_t`, `variance_t`, `achievement_pct`, `reported_days`).
+  - Key emergency contacts hierarchy ordered by `rank` (1..20).
+- **Worker-Safe View & Privacy**:
+  - Foremen and miners receive a trimmed worker-safe model (`id`, `name`, `status`, `evacuation_notes`, `contacts`, `current_tunnel`).
+  - Corporate classification, production, headcount, depth, area, and lat/lon are strictly omitted.
+  - Mine emergency contacts (with phone numbers) are visible to workers by design for rapid emergency escalation.
+- **Production Tracking Domain & Validations**:
+  - `mine_production` composite primary key `(mine_id, day)`, checks `planned_t >= 0`, `actual_t >= 0`, and at least one metric not null.
+  - Future `actual_t` rejected in `HOURS_TIMEZONE`. Maximum lookback of 5 years. Upsert up to 62 entries per call.
+- **Automated Verification**:
+  - Added `tests/test_step9_mine_profile_and_production.py` with 11 comprehensive tests covering all five groups, worker view redaction, scoping, atomic contacts replacement, production upsert/summary, direct check constraints, query scalability, and migration downgrade/upgrade round-trip. Total suite: 161 tests passing.
 
 ### 2026-11-24 - Step 8 Follow-up: SOS Resilience, Idempotency, and Merge Life Cycle
 - **SOS Incident Idempotency & Conflict Handling**:

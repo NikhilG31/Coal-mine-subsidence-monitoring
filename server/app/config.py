@@ -149,6 +149,12 @@ if REPORT_MAX_AGE_DAYS_WORKER_VIEW <= 0:
     raise ValueError("REPORT_MAX_AGE_DAYS_WORKER_VIEW must be positive")
 
 
+# Step 9: Mine Profile and Output Tracking Configuration
+SHIFT_LOOKAHEAD_H: int = int(os.getenv("SHIFT_LOOKAHEAD_H", "12"))
+if SHIFT_LOOKAHEAD_H <= 0:
+    raise ValueError("SHIFT_LOOKAHEAD_H must be positive")
+
+
 def validate_jwt_secret() -> None:
     """Enforces that JWT_SECRET is configured, >= 32 chars, >= 12 distinct chars, and no CHANGE_ME."""
     if not JWT_SECRET or len(JWT_SECRET) < 32:

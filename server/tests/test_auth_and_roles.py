@@ -113,6 +113,13 @@ POLICY_TABLE = {
     ("POST", "/api/reports"): "any_role_scoped",
     ("GET", "/api/reports"): "any_role_scoped",
     ("PATCH", "/api/reports/{id}"): "superiors_scoped",
+    # STEP 9: MINE PROFILE AND PRODUCTION
+    ("GET", "/api/mines/{id}/profile"): "any_role_scoped",
+    ("PATCH", "/api/mines/{id}/profile"): "superiors_scoped",
+    ("PUT", "/api/mines/{id}/contacts"): "superiors_scoped",
+    ("GET", "/api/mines/{id}/headcount"): "superiors_scoped",
+    ("GET", "/api/mines/{id}/production"): "superiors_scoped",
+    ("PUT", "/api/mines/{id}/production"): "superiors_scoped",
     ("POST", "/api/demo/seed"): "manager_only",
     ("POST", "/api/demo/step"): "manager_only",
     ("POST", "/api/demo/toggle-live"): "manager_only",

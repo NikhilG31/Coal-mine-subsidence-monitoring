@@ -22,6 +22,8 @@ from app.models.incident import Incident
 from app.models.incident_roster import IncidentRoster
 from app.models.node_command import NodeCommand
 from app.models.worker_report import WorkerReport
+from app.models.mine_contact import MineContact
+from app.models.mine_production import MineProduction
 
 __all__ = [
     "Base",
@@ -45,4 +47,6 @@ __all__ = [
     "IncidentRoster",
     "NodeCommand",
     "WorkerReport",
+    "MineContact",
+    "MineProduction",
 ]

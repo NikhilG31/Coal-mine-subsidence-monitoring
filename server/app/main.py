@@ -48,6 +48,7 @@ from app.routers import (
     ingest,
     me,
     mines,
+    mine_profile,
     node_commands,
     nodes,
     notifications,
@@ -119,6 +120,7 @@ app.include_router(incidents.router)
 app.include_router(node_commands.router)
 app.include_router(reports.router)
 app.include_router(me.router)
+app.include_router(mine_profile.router)
 
 
 @app.get("/")
