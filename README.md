@@ -41,144 +41,148 @@ coal-mine-subsidence-monitoring/
 ├── firmware/                                     # ESP32 C firmware (unmodified wire formats)
 │   ├── gateway/                                  # ESP-NOW to HTTP client bridge (Receiver_main.c)
 │   └── sensor_node/                              # MPU-6050, SW160, SOS button node (Sender_main.c)
-└── server/                                       # FastAPI backend server package
-    ├── alembic.ini                               # Alembic migration configuration
-    ├── requirements.txt                          # Production runtime dependencies (psycopg v3, PyJWT, openpyxl, FastAPI)
-    ├── requirements-dev.txt                      # Development & test dependencies (-r requirements.txt, pytest, httpx)
-    ├── migrations/                               # Alembic database migrations
-    │   ├── README                                # Migrations documentation
-    │   ├── env.py                                # Migration environment runner (compare_type & defaults enabled)
-    │   ├── script.py.mako                        # Revision script template
-    │   └── versions/                             # Schema migration versions
-    │       ├── c79d6f612a5e_create_step1_tables.py # Initial 8 core PostgreSQL tables
-    │       ├── d84e2a87b91f_step1_hardening.py   # Server defaults, check constraint, index cleanup
-    │       ├── e95f3b721a01_step3_placement_and_audit.py # Audit log, mine unique, gateway MAC regex, placement constraint
-    │       ├── e252124b61df_step4_alerts_and_token_version.py # Alerts table, partial unique indexes, user token_version
-    │       ├── c1506e641433_step5_workers_assignments_shifts.py # Worker profiles, assignments, and GIST exclusion constraint
-    │       ├── e2b8b74826ca_step6_qr_checkin_headcount_flags.py # QR tokens, check events, check flags, partial unique indexes
-    │       ├── a69df82fa18b_step7_incidents_roll_call_node_commands.py # Incidents, incident roster snapshot, node commands table
-    │       └── 5d042c33b47c_step8_worker_reports_and_sos.py # Worker reports, device SOS, and partial unique index on open SOS incidents
-    ├── app/                                      # Application package
-    │   ├── __init__.py                           # App package root
-    │   ├── config.py                             # Centralized environment variable loader (no defaults for DB)
-    │   ├── database.py                           # SQLAlchemy engine, SessionLocal factory, and Base
-    │   ├── main.py                               # FastAPI application factory, router registration, static mount
-    │   ├── watchdog_runner.py                    # Background offline detection daemon with PostgreSQL advisory lock
-    │   ├── cli/                                  # Command-line tools
-    │   │   └── seed_manager.py                   # Idempotent Company & Manager bootstrapping CLI
-    │   ├── dev/                                  # Development-only helpers
-    │   │   ├── seed_demo_data.py                 # Seeds test mine, tunnel, and simulator gateways
-    │   │   └── simulator.py                      # Multi-node 38-byte ESP packet simulator
-    │   ├── models/                               # SQLAlchemy ORM models (one file per table)
-    │   │   ├── __init__.py                       # Package exports for all models
-    │   │   ├── alert.py                          # Alert model with offline states and partial unique constraints
-    │   │   ├── assignment.py                     # Underground tunnel shift assignment with GIST exclusion constraint
-    │   │   ├── audit_log.py                      # Immutable audit log model
-    │   │   ├── check_event.py                    # Check-in and check-out event database entity model
-    │   │   ├── check_flag.py                     # Shift check-out exception flag database entity model
-    │   │   ├── company.py                        # Company table and normalized name helper
-    │   │   ├── gateway.py                        # Hardware gateway table
-    │   │   ├── incident.py                       # Emergency incident entity with status check & auto partial unique index
-    │   │   ├── incident_roster.py                # Roll call roster snapshot entity with accounting timestamps
-    │   │   ├── mine.py                           # Coal mine sites table
-    │   │   ├── node.py                           # Sensor nodes table (1..255 range constraint)
-    │   │   ├── node_command.py                   # Downlink node command entity with sequence wrapping & pending partial index
-    │   │   ├── qr_token.py                       # QR badge token entity with partial unique active index
-    │   │   ├── reading.py                        # Telemetry readings table with partial unique index
-    │   │   ├── tunnel.py                         # Underground mine tunnels table
-    │   │   ├── user.py                           # Users and UserMine association tables
-    │   │   ├── worker_profile.py                 # Worker profile and emergency contact table
-    │   │   └── worker_report.py                  # Worker safety problem reports and device SOS distress records
-    │   ├── routers/                              # FastAPI area routers (HTTP handling only)
-    │   │   ├── alerts.py                         # GET /api/alerts, POST /api/alerts/{id}/ack
-    │   │   ├── assignments.py                    # POST/PATCH/DELETE /api/assignments, GET /api/assignments
-    │   │   ├── auth.py                           # POST /api/auth/login, GET /api/auth/me, POST /api/auth/logout, POST /api/auth/change-password
-    │   │   ├── check_flags.py                    # GET /api/check-flags, PATCH /api/check-flags/{id}
-    │   │   ├── checkins.py                       # POST /api/checkins, POST /api/checkins/manual, GET /api/checkins, GET /api/headcount
-    │   │   ├── demo.py                           # /api/demo/* simulation and testing routes
-    │   │   ├── export.py                         # GET /api/export.xlsx workbook export
-    │   │   ├── gateways.py                       # GET/PATCH/DELETE /api/gateways, POST /api/gateways/{id}/rotate-key
-    │   │   ├── health.py                         # GET /api/health monitoring endpoint
-    │   │   ├── history.py                        # GET /api/history time-series queries (eager loaded)
-    │   │   ├── incidents.py                      # POST /api/incidents, GET /api/incidents, GET/POST roster, PATCH close, PATCH siren
-    │   │   ├── ingest.py                         # POST /api/ingest 38-byte binary receiver & downlink CMD text/plain response
-    │   │   ├── me.py                             # GET /api/me/shifts, GET /api/me/profile
-    │   │   ├── mines.py                          # GET/POST /api/mines, /api/mines/{id}/tunnels, /api/mines/{id}/gateways
-    │   │   ├── node_commands.py                  # POST /api/nodes/{id}/commands manual buzzer trigger
-    │   │   ├── nodes.py                          # GET /api/nodes telemetry list
-    │   │   ├── notifications.py                  # GET / POST /api/notifications/config
-    │   │   ├── placements.py                     # GET /api/placements, GET /api/unplaced, PATCH/DELETE /api/nodes/{id}/placement
-    │   │   ├── reports.py                        # POST /api/reports, GET /api/reports, PATCH /api/reports/{id}
-    │   │   ├── users.py                          # GET/POST /api/users, PATCH/DELETE /api/users/{id}
-    │   │   └── workers.py                        # GET /api/workers, GET /api/workers/{id}, PUT /api/workers/{id}/profile, POST/DELETE /api/workers/{id}/badge
-    │   ├── schemas/                              # Pydantic serialization schemas and view models
-    │   │   ├── __init__.py                       # Package exports
-    │   │   ├── checkins.py                       # Badge, scan, headcount, and check flag schemas
-    │   │   ├── incidents.py                      # IncidentOpenRequest, IncidentResponse, RosterMemberResponse, CloseIncidentRequest
-    │   │   ├── mines.py                          # Mine, tunnel, and gateway creation request schemas
-    │   │   ├── node_commands.py                  # CreateCommandRequest, CommandResponse
-    │   │   ├── nodes.py                          # WorkerNodeView (strict leakage prevention) & SuperiorNodeView
-    │   │   ├── placements.py                     # PlacementsResponse, WorkerPlacementView, SuperiorPlacementView
-    │   │   ├── reports.py                        # CreateReportRequest, UpdateReportRequest, SuperiorReportView, WorkerReportView
-    │   │   └── workers.py                        # ProfileUpsertRequest, CreateAssignmentRequest, and worker shift schemas
-    │   ├── security/                             # Authentication, RBAC, and cryptographic primitives
-    │   │   ├── __init__.py                       # Security package exports
-    │   │   ├── dependencies.py                   # FastAPI dependencies (auth, role checks, mine scoping)
-    │   │   ├── password_policy.py                # Centralized password complexity rules
-    │   │   ├── passwords.py                      # PBKDF2-HMAC-SHA256 (600k iter) & legacy hash verification
-    │   │   ├── rate_limit.py                     # Sliding-window login & gate scan throughput limiter
-    │   │   ├── roles.py                          # Role definitions and role grouping logic
-    │   │   └── tokens.py                         # HS256 JWT session tokens and cookie management
-    │   ├── services/                             # Core business logic (no FastAPI imports)
-    │   │   ├── audit.py                          # Atomic audit log recorder
-    │   │   ├── badge_service.py                  # 256-bit token generation, SHA-256 storage, segno SVG, and revocation
-    │   │   ├── checkin_service.py                # Gate scan processing, 5s deduplication, state transitions, roll call integration
-    │   │   ├── clock.py                          # Centralized timezone-aware UTC clock provider
-    │   │   ├── connectivity.py                   # Single source of truth for node and gateway online calculation
-    │   │   ├── flag_clearing.py                  # Manual flag clearance, note audit sanitization, manual 'out' event
-    │   │   ├── flag_service.py                   # Background shift evaluation past grace and idempotent check_flag creation
-    │   │   ├── gateway_keys.py                   # Cryptographic 256-bit API key generator and SHA-256 verifier
-    │   │   ├── hazard_classifier.py              # Pure function classifier matching firmware thresholds
-    │   │   ├── headcount.py                      # DISTINCT ON latest check event, live inside counts, scheduled counts
-    │   │   ├── incident_service.py               # Incident lifecycle, roll call snapshot, manual/gate accounting, auto-critical open
-    │   │   ├── ingest_service.py                 # Packet verification, deduplication, persistence, and downlink ack
-    │   │   ├── latest_readings.py                # PostgreSQL distinct_on query optimizer for telemetry readings
-    │   │   ├── node_command_service.py           # Command queueing, sequence wrapping, line encoding, echo acknowledgment
-    │   │   ├── node_placement.py                 # Node placement completeness helpers and expressions
-    │   │   ├── node_serializer.py                # Telemetry dictionary serializer (superior & worker views)
-    │   │   ├── packet_codec.py                   # 38-byte struct parse and pack definition
-    │   │   ├── report_service.py                 # Worker problem reports, rate limiting, and resolution lifecycle
-    │   │   ├── roll_call_service.py              # Evacuation roll call accounting and late arrival snapshot helpers
-    │   │   ├── shift_service.py                  # Shift creation, duration checks, overlap detection, exclusion constraint handling
-    │   │   ├── siren_service.py                  # Periodic background siren keepalive refresh cycle
-    │   │   ├── sos_service.py                    # Device SOS packet ingestion, 60s merge window, flood guard, and incident creation
-    │   │   ├── tunnel_scope.py                   # Worker current tunnel resolution and miner visible tunnel scoping
-    │   │   ├── watchdog_service.py               # Watchdog offline timeout evaluation and alert auto-resolution
-    │   │   ├── weekly_hours.py                   # Rolling week boundary splitting, hours summing, and warning generation
-    │   │   └── worker_queries.py                 # Scoped worker roster queries and worker shift detail history
-    │   └── static/                               # Web dashboard client files
-    │       ├── app.js                            # Leaflet and dashboard client logic
-    │       ├── checkin.js                        # Gate scan controller and scanner interface
-    │       ├── headcount_flags.js                # Badge modal, live headcount polling, and flag resolution UI
-    │       ├── incidents.js                      # Emergency incidents, roll call roster, and buzzer control UI
-    │       ├── index.html                        # Dashboard HTML layout
-    │       ├── reports.js                        # Worker hazard reporting, superior inbox, and persistent SOS banner
-    │       └── style.css                         # Neo-Brutalist dashboard styles
-    └── tests/                                    # Pytest test suite (runs on test database)
-        ├── conftest.py                           # TEST_DATABASE_URL fixture, migrations & table truncation
-        ├── test_auth_and_roles.py                # RBAC matrix, tenant isolation, rate limit, worker leakage tests
-        ├── test_classifier.py                    # Spec matrix unit tests for hazard classifier
-        ├── test_dashboard_routes.py              # Dashboard API endpoints and placement workflow tests
-        ├── test_ingest.py                        # Packet length, gateway check, dedup, and classification tests
-        ├── test_seed.py                          # seed_manager idempotency and password reset tests
-        ├── test_step3_phase_b.py                 # Step 3 gateway keys, placement, audit, and manager journey tests
-        ├── test_step4_watchdog.py                # Step 4 watchdog, connectivity boundary, and scoping tests
-        ├── test_step5_policy.py                  # Step 5 policy enforcement, employee profile, redaction, and N+1 tests
-        ├── test_step5_shifts.py                  # Step 5 shifts, overlap rejection, exclusion constraint, scoping tests
-        ├── test_step6_badges_and_headcount.py    # Step 6 QR badges, gate scanning, headcount, flags, and concurrency tests
-        ├── test_step7_hardening.py               # Step 7.5 gateway scoping, siren cycle, auto-incidents, retention tests
-        ├── test_step7_incidents_and_commands.py  # Step 7 emergency incidents, roll call snapshot, commands, and siren tests
-        └── test_step8_reports_and_sos.py         # Step 8 worker reports, device SOS, merge window, and flood guard tests
+├── server/                                       # FastAPI backend server package
+│   ├── alembic.ini                               # Alembic migration configuration
+│   ├── requirements.txt                          # Production runtime dependencies (psycopg v3, PyJWT, openpyxl, FastAPI)
+│   ├── requirements-dev.txt                      # Development & test dependencies (-r requirements.txt, pytest, httpx)
+│   ├── migrations/                               # Alembic database migrations
+│   │   ├── README                                # Migrations documentation
+│   │   ├── env.py                                # Migration environment runner (compare_type & defaults enabled)
+│   │   ├── script.py.mako                        # Revision script template
+│   │   └── versions/                             # Schema migration versions
+│   │       ├── c79d6f612a5e_create_step1_tables.py # Initial 8 core PostgreSQL tables
+│   │       ├── d84e2a87b91f_step1_hardening.py   # Server defaults, check constraint, index cleanup
+│   │       ├── e95f3b721a01_step3_placement_and_audit.py # Audit log, mine unique, gateway MAC regex, placement constraint
+│   │       ├── e252124b61df_step4_alerts_and_token_version.py # Alerts table, partial unique indexes, user token_version
+│   │       ├── c1506e641433_step5_workers_assignments_shifts.py # Worker profiles, assignments, and GIST exclusion constraint
+│   │       ├── e2b8b74826ca_step6_qr_checkin_headcount_flags.py # QR tokens, check events, check flags, partial unique indexes
+│   │       ├── a69df82fa18b_step7_incidents_roll_call_node_commands.py # Incidents, incident roster snapshot, node commands table
+│   │       └── 5d042c33b47c_step8_worker_reports_and_sos.py # Worker reports, device SOS, and partial unique index on open SOS incidents
+│   ├── app/                                      # Application package
+│   │   ├── __init__.py                           # App package root
+│   │   ├── config.py                             # Centralized environment variable loader (no defaults for DB)
+│   │   ├── database.py                           # SQLAlchemy engine, SessionLocal factory, and Base
+│   │   ├── main.py                               # FastAPI application factory, router registration, static mount
+│   │   ├── watchdog_runner.py                    # Background offline detection daemon with PostgreSQL advisory lock
+│   │   ├── cli/                                  # Command-line tools
+│   │   │   └── seed_manager.py                   # Idempotent Company & Manager bootstrapping CLI
+│   │   ├── dev/                                  # Development-only helpers
+│   │   │   ├── seed_demo_data.py                 # Seeds test mine, tunnel, and simulator gateways
+│   │   │   └── simulator.py                      # Multi-node 38-byte ESP packet simulator
+│   │   ├── models/                               # SQLAlchemy ORM models (one file per table)
+│   │   │   ├── __init__.py                       # Package exports for all models
+│   │   │   ├── alert.py                          # Alert model with offline states and partial unique constraints
+│   │   │   ├── assignment.py                     # Underground tunnel shift assignment with GIST exclusion constraint
+│   │   │   ├── audit_log.py                      # Immutable audit log model
+│   │   │   ├── check_event.py                    # Check-in and check-out event database entity model
+│   │   │   ├── check_flag.py                     # Shift check-out exception flag database entity model
+│   │   │   ├── company.py                        # Company table and normalized name helper
+│   │   │   ├── gateway.py                        # Hardware gateway table
+│   │   │   ├── incident.py                       # Emergency incident entity with status check & auto partial unique index
+│   │   │   ├── incident_roster.py                # Roll call roster snapshot entity with accounting timestamps
+│   │   │   ├── mine.py                           # Coal mine sites table
+│   │   │   ├── node.py                           # Sensor nodes table (1..255 range constraint)
+│   │   │   ├── node_command.py                   # Downlink node command entity with sequence wrapping & pending partial index
+│   │   │   ├── qr_token.py                       # QR badge token entity with partial unique active index
+│   │   │   ├── reading.py                        # Telemetry readings table with partial unique index
+│   │   │   ├── tunnel.py                         # Underground mine tunnels table
+│   │   │   ├── user.py                           # Users and UserMine association tables
+│   │   │   ├── worker_profile.py                 # Worker profile and emergency contact table
+│   │   │   └── worker_report.py                  # Worker safety problem reports and device SOS distress records
+│   │   ├── routers/                              # FastAPI area routers (HTTP handling only)
+│   │   │   ├── alerts.py                         # GET /api/alerts, POST /api/alerts/{id}/ack
+│   │   │   ├── assignments.py                    # POST/PATCH/DELETE /api/assignments, GET /api/assignments
+│   │   │   ├── auth.py                           # POST /api/auth/login, GET /api/auth/me, POST /api/auth/logout, POST /api/auth/change-password
+│   │   │   ├── check_flags.py                    # GET /api/check-flags, PATCH /api/check-flags/{id}
+│   │   │   ├── checkins.py                       # POST /api/checkins, POST /api/checkins/manual, GET /api/checkins, GET /api/headcount
+│   │   │   ├── demo.py                           # /api/demo/* simulation and testing routes
+│   │   │   ├── export.py                         # GET /api/export.xlsx workbook export
+│   │   │   ├── gateways.py                       # GET/PATCH/DELETE /api/gateways, POST /api/gateways/{id}/rotate-key
+│   │   │   ├── health.py                         # GET /api/health monitoring endpoint
+│   │   │   ├── history.py                        # GET /api/history time-series queries (eager loaded)
+│   │   │   ├── incidents.py                      # POST /api/incidents, GET /api/incidents, GET/POST roster, PATCH close, PATCH siren
+│   │   │   ├── ingest.py                         # POST /api/ingest 38-byte binary receiver & downlink CMD text/plain response
+│   │   │   ├── me.py                             # GET /api/me/shifts, GET /api/me/profile
+│   │   │   ├── mines.py                          # GET/POST /api/mines, /api/mines/{id}/tunnels, /api/mines/{id}/gateways
+│   │   │   ├── node_commands.py                  # POST /api/nodes/{id}/commands manual buzzer trigger
+│   │   │   ├── nodes.py                          # GET /api/nodes telemetry list
+│   │   │   ├── notifications.py                  # GET / POST /api/notifications/config
+│   │   │   ├── placements.py                     # GET /api/placements, GET /api/unplaced, PATCH/DELETE /api/nodes/{id}/placement
+│   │   │   ├── reports.py                        # POST /api/reports, GET /api/reports, PATCH /api/reports/{id}
+│   │   │   ├── users.py                          # GET/POST /api/users, PATCH/DELETE /api/users/{id}
+│   │   │   └── workers.py                        # GET /api/workers, GET /api/workers/{id}, PUT /api/workers/{id}/profile, POST/DELETE /api/workers/{id}/badge
+│   │   ├── schemas/                              # Pydantic serialization schemas and view models
+│   │   │   ├── __init__.py                       # Package exports
+│   │   │   ├── checkins.py                       # Badge, scan, headcount, and check flag schemas
+│   │   │   ├── incidents.py                      # IncidentOpenRequest, IncidentResponse, RosterMemberResponse, CloseIncidentRequest
+│   │   │   ├── mines.py                          # Mine, tunnel, and gateway creation request schemas
+│   │   │   ├── node_commands.py                  # CreateCommandRequest, CommandResponse
+│   │   │   ├── nodes.py                          # WorkerNodeView (strict leakage prevention) & SuperiorNodeView
+│   │   │   ├── placements.py                     # PlacementsResponse, WorkerPlacementView, SuperiorPlacementView
+│   │   │   ├── reports.py                        # CreateReportRequest, UpdateReportRequest, SuperiorReportView, WorkerReportView
+│   │   │   └── workers.py                        # ProfileUpsertRequest, CreateAssignmentRequest, and worker shift schemas
+│   │   ├── security/                             # Authentication, RBAC, and cryptographic primitives
+│   │   │   ├── __init__.py                       # Security package exports
+│   │   │   ├── dependencies.py                   # FastAPI dependencies (auth, role checks, mine scoping)
+│   │   │   ├── password_policy.py                # Centralized password complexity rules
+│   │   │   ├── passwords.py                      # PBKDF2-HMAC-SHA256 (600k iter) & legacy hash verification
+│   │   │   ├── rate_limit.py                     # Sliding-window login & gate scan throughput limiter
+│   │   │   ├── roles.py                          # Role definitions and role grouping logic
+│   │   │   └── tokens.py                         # HS256 JWT session tokens and cookie management
+│   │   ├── services/                             # Core business logic (no FastAPI imports)
+│   │   │   ├── audit.py                          # Atomic audit log recorder
+│   │   │   ├── badge_service.py                  # 256-bit token generation, SHA-256 storage, segno SVG, and revocation
+│   │   │   ├── checkin_service.py                # Gate scan processing, 5s deduplication, state transitions, roll call integration
+│   │   │   ├── clock.py                          # Centralized timezone-aware UTC clock provider
+│   │   │   ├── connectivity.py                   # Single source of truth for node and gateway online calculation
+│   │   │   ├── flag_clearing.py                  # Manual flag clearance, note audit sanitization, manual 'out' event
+│   │   │   ├── flag_service.py                   # Background shift evaluation past grace and idempotent check_flag creation
+│   │   │   ├── gateway_keys.py                   # Cryptographic 256-bit API key generator and SHA-256 verifier
+│   │   │   ├── hazard_classifier.py              # Pure function classifier matching firmware thresholds
+│   │   │   ├── headcount.py                      # DISTINCT ON latest check event, live inside counts, scheduled counts
+│   │   │   ├── incident_service.py               # Incident lifecycle, roll call snapshot, manual/gate accounting, auto-critical open
+│   │   │   ├── ingest_service.py                 # Packet verification, deduplication, persistence, and downlink ack
+│   │   │   ├── latest_readings.py                # PostgreSQL distinct_on query optimizer for telemetry readings
+│   │   │   ├── node_command_service.py           # Command queueing, sequence wrapping, line encoding, echo acknowledgment
+│   │   │   ├── node_placement.py                 # Node placement completeness helpers and expressions
+│   │   │   ├── node_serializer.py                # Telemetry dictionary serializer (superior & worker views)
+│   │   │   ├── packet_codec.py                   # 38-byte struct parse and pack definition
+│   │   │   ├── report_service.py                 # Worker problem reports, rate limiting, and resolution lifecycle
+│   │   │   ├── roll_call_service.py              # Evacuation roll call accounting and late arrival snapshot helpers
+│   │   │   ├── shift_service.py                  # Shift creation, duration checks, overlap detection, exclusion constraint handling
+│   │   │   ├── siren_service.py                  # Periodic background siren keepalive refresh cycle
+│   │   │   ├── sos_service.py                    # Device SOS packet ingestion, 60s merge window, flood guard, and incident creation
+│   │   │   ├── tunnel_scope.py                   # Worker current tunnel resolution and miner visible tunnel scoping
+│   │   │   ├── watchdog_service.py               # Watchdog offline timeout evaluation and alert auto-resolution
+│   │   │   ├── weekly_hours.py                   # Rolling week boundary splitting, hours summing, and warning generation
+│   │   │   └── worker_queries.py                 # Scoped worker roster queries and worker shift detail history
+│   │   └── static/                               # Web dashboard client files
+│   │       ├── app.js                            # Leaflet and dashboard client logic
+│   │       ├── checkin.js                        # Gate scan controller and scanner interface
+│   │       ├── headcount_flags.js                # Badge modal, live headcount polling, and flag resolution UI
+│   │       ├── incidents.js                      # Emergency incidents, roll call roster, and buzzer control UI
+│   │       ├── index.html                        # Dashboard HTML layout
+│   │       ├── reports.js                        # Worker hazard reporting, superior inbox, and persistent SOS banner
+│   │       └── style.css                         # Neo-Brutalist dashboard styles
+│   └── tests/                                    # Pytest test suite (runs on test database)
+│       ├── conftest.py                           # TEST_DATABASE_URL fixture, migrations & table truncation
+│       ├── test_auth_and_roles.py                # RBAC matrix, tenant isolation, rate limit, worker leakage tests
+│       ├── test_classifier.py                    # Spec matrix unit tests for hazard classifier
+│       ├── test_dashboard_routes.py              # Dashboard API endpoints and placement workflow tests
+│       ├── test_ingest.py                        # Packet length, gateway check, dedup, and classification tests
+│       ├── test_seed.py                          # seed_manager idempotency and password reset tests
+│       ├── test_step3_phase_b.py                 # Step 3 gateway keys, placement, audit, and manager journey tests
+│       ├── test_step4_watchdog.py                # Step 4 watchdog, connectivity boundary, and scoping tests
+│       ├── test_step5_policy.py                  # Step 5 policy enforcement, employee profile, redaction, and N+1 tests
+│       ├── test_step5_shifts.py                  # Step 5 shifts, overlap rejection, exclusion constraint, scoping tests
+│       ├── test_step6_badges_and_headcount.py    # Step 6 QR badges, gate scanning, headcount, flags, and concurrency tests
+│       ├── test_step7_hardening.py               # Step 7.5 gateway scoping, siren cycle, auto-incidents, retention tests
+│       ├── test_step7_incidents_and_commands.py  # Step 7 emergency incidents, roll call snapshot, commands, and siren tests
+│       ├── test_step8_followup_sos.py            # Step 8 follow-up SOS incident idempotency, merge, and retry tests
+│       └── test_step8_reports_and_sos.py         # Step 8 worker reports, device SOS, merge window, and flood guard tests
+└── tools/                                        # Developer and project reporting tooling
+    ├── build_synopsis.py                         # Synopsis document generation tool
+    └── render_pages.py                           # PDF page rendering utility
 ```
 
 ---
@@ -859,6 +863,7 @@ Radio command sent by gateway over ESP-NOW:
 | **Step 7** | Incidents and roll call | **Done** | Manual and auto emergency incidents, roll call snapshot, automatic gate-scan accounting, downlink node commands delivery over HTTPS ingest, sequence echoing ack, and siren keepalive refresh cycle. | 2026-11-23 |
 | **Step 7.5** | Hardening and Phase A Fixes | **Done** | Gateway-scoped node commands, siren reliability (extend pending, refresh acked > 30s), cross-tunnel scan-out roll call accounting in open incidents, auto-incident config & ingest matrix, incident row locking FOR UPDATE, uniform 409 body shape, command status superseded, 30-day command retention cleanup. | 2026-11-23 |
 | **Step 8** | Worker reports and SOS | **Done** | Report form, inbox, status flow, node SOS button and SOS packet. Report moves through workflow; button press shows as SOS report within seconds. | 2026-11-23 |
+| **Step 8.5** | Step 8 Follow-up & SOS Hardening | **Done** | SOS incident idempotency on `uq_incidents_open_sos`, resolved report guard, 503 retry contract without reading loss, duplicate reading SOS trigger, and comprehensive follow-up test suite. | 2026-11-24 |
 | **Step 9** | Mine profile and output tracking | *Not started* | Profile fields, contacts, plan vs actual. Mine page shows all five profile groups. | — |
 | **Step 10** | Outbound notifications and extras | *Not started* | Telegram/WhatsApp outbound dispatch, PDF export, WebSocket updates. | — |
 
@@ -914,6 +919,31 @@ The following firmware features from Step 4 and Step 8 require modifying packet 
 ---
 
 ## 12. Changelog
+
+### 2026-11-24 - Step 8 Follow-up: SOS Resilience, Idempotency, and Merge Life Cycle
+- **SOS Incident Idempotency & Conflict Handling**:
+  - `services/sos_service.py` ensures an open SOS incident on EVERY signal (new reports, window merges, and flood guard merges).
+  - Explicitly catches `IntegrityError` only for constraint `uq_incidents_open_sos`, looking up and reusing the conflicting open SOS incident. Any other integrity or database error is logged with `logger.exception` and re-raised.
+  - Strict company isolation: removed fallback to company 0; gateway's company must resolve or raises `ValueError`.
+- **Report Lifecycle & Flood Guard Guarding**:
+  - Merge window (60s) and flood guard (6 new/hour) only merge into an `open` or `acknowledged` report. A `resolved` report never absorbs a new signal, ensuring subsequent signals spawn fresh open reports.
+- **Ingest Pipeline & 503 Retry Contract**:
+  - `services/ingest_service.py` commits sensor telemetry readings before invoking SOS handling.
+  - Runs SOS processing for duplicate packets as well as new packets.
+  - When SOS handling fails, rolls back SOS transaction while preserving committed reading, and raises `SOSHandlingError` which returns HTTP 503 `{"detail": "SOS handling failed"}` with `Retry-After: 2` header for gateway retry.
+- **Automated Verification**:
+  - Added `tests/test_step8_followup_sos.py` with 9 comprehensive tests:
+    1. `test_signal_merged_into_acknowledged_report`
+    2. `test_signal_after_report_resolved_creates_new_report`
+    3. `test_flood_guard_merges_only_unresolved`
+    4. `test_open_incident_failure_contract_and_retry`
+    5. `test_merged_signal_creates_missing_incident`
+    6. `test_unique_index_race_reuses_existing_incident`
+    7. `test_sos_on_duplicate_reading_creates_or_merges`
+    8. `test_concurrent_signals_barrier`
+    9. `test_unplaced_node_report_no_incident`
+  - Total test suite: **150 passed in pytest (0 failures)**.
+  - `alembic check` clean with zero schema drift.
 
 ### 2026-11-23 - Step 8: Worker Reports and Device SOS Path (Phase B)
 - **Database Migration (`5d042c33b47c`)**:
