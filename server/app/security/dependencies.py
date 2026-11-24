@@ -27,7 +27,6 @@ __all__ = [
 ]
 security_logger = logging.getLogger("security")
 security_logger.setLevel(logging.INFO)
-security_logger.disabled = False
 
 
 class PasswordChangeRequiredException(Exception):

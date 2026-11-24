@@ -141,8 +141,9 @@ def test_flood_guard_merges_only_unresolved(client, db, freeze_clock):
     assert len(reports_after) == 7 and reports_after[-1].status == "open" and reports_after[-1].repeat_count == 1
 
 
-def test_open_incident_failure_contract_and_retry(client, db):
+def test_open_incident_failure_contract_and_retry(client, db, freeze_clock):
     """F1, F4, F5: open_incident failure -> 503, reading stored, retry yields 1 report + 1 incident."""
+    freeze_clock(datetime.datetime(2030, 1, 1, 10, 0, tzinfo=datetime.timezone.utc))
     env = _setup_env(db)
     gw, node = env["gw"], env["node_placed"]
     headers = {"Content-Type": "application/octet-stream", "X-Gateway-Key": "gwkey_test"}
@@ -257,8 +258,9 @@ def test_sos_on_duplicate_reading_creates_or_merges(client, db, freeze_clock):
     assert reports[0].repeat_count == 2
 
 
-def test_concurrent_signals_barrier(db):
+def test_concurrent_signals_barrier(db, freeze_clock):
     """F5: Two concurrent signals (two sessions, barrier) -> exactly one report."""
+    freeze_clock(datetime.datetime(2030, 1, 1, 10, 0, tzinfo=datetime.timezone.utc))
     env = _setup_env(db)
     gw, node = env["gw"], env["node_placed"]
     headers = {"Content-Type": "application/octet-stream", "X-Gateway-Key": "gwkey_test"}
