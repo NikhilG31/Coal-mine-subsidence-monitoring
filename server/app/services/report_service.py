@@ -20,7 +20,7 @@ from app.models.worker_report import WorkerReport
 from app.security.dependencies import get_allowed_mine_ids
 from app.security.roles import SUPERIOR_ROLES
 from app.services.audit import record_audit
-from app.services import clock
+from app.services import clock, notification_service
 from app.services.tunnel_scope import get_current_tunnel_id
 
 # In-memory sliding window rate limiter: user_id -> deque of submission timestamps
@@ -168,6 +168,25 @@ def create_worker_report(
     )
     db.add(report)
     db.flush()
+
+    if type == "sos":
+        mine = db.query(Mine).filter(Mine.id == mine_id).first()
+        mine_name = mine.name if mine else f"Mine {mine_id}"
+        notification_service.enqueue(
+            db=db,
+            mine_id=mine_id,
+            event="sos_report",
+            ref_type="report",
+            ref_id=report.id,
+            message_args={
+                "mine_name": mine_name,
+                "tunnel_name": resolved_tunnel.name if resolved_tunnel else None,
+                "node_label": None,
+                "incident_id": None,
+            },
+            now=now,
+        )
+
     return report
 
 

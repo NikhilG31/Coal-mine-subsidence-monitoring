@@ -27,16 +27,18 @@ flowchart TD
         Watchdog["Watchdog Runner Daemon (Postgres Advisory Lock)"]
         HeadcountService["Headcount & Check Flag Service"]
         ProductionService["Production & Profile Domain Service"]
+        NotificationService["Notification Outbox & Delivery Worker"]
         AuthRBAC["RBAC & Session Service (HS256 JWT, PBKDF2)"]
     end
 
     subgraph Storage["PostgreSQL 16 Storage Tier"]
-        DB[("mine_subsidence (21 Core Tables)")]
+        DB[("mine_subsidence (23 Core Tables)")]
         IngestService --> DB
         SOSService --> DB
         Watchdog --> DB
         HeadcountService --> DB
         ProductionService --> DB
+        NotificationService --> DB
         AuthRBAC --> DB
     end
 
@@ -105,7 +107,8 @@ coal-mine-subsidence-monitoring/
 │   │       ├── e2b8b74826ca_step6_qr_checkin_headcount_flags.py # QR tokens, check events, check flags, partial unique indexes
 │   │       ├── a69df82fa18b_step7_incidents_roll_call_node_commands.py # Incidents, incident roster snapshot, node commands table
 │   │       ├── 5d042c33b47c_step8_worker_reports_and_sos.py # Worker reports, device SOS, and partial unique index on open SOS incidents
-│   │       └── 343347cf01f6_step9_mine_profile_and_production.py # Evacuation notes, emergency contacts, and daily production
+│   │       ├── 343347cf01f6_step9_mine_profile_and_production.py # Evacuation notes, emergency contacts, and daily production
+│   │       └── 382a31dc9a8e_step10_notifications.py # Notification settings, delivery log outbox, and dropped redundant indexes
 │   ├── app/                                      # Application package
 │   │   ├── __init__.py                           # App package root
 │   │   ├── config.py                             # Centralized environment variable loader (no defaults for DB)
@@ -133,6 +136,8 @@ coal-mine-subsidence-monitoring/
 │   │   │   ├── mine_production.py                # Daily planned and actual coal production table
 │   │   │   ├── node.py                           # Sensor nodes table (1..255 range constraint)
 │   │   │   ├── node_command.py                   # Downlink node command entity with sequence wrapping & pending partial index
+│   │   │   ├── notification_log.py               # Outbound notification delivery log outbox with deduplication & retry tracking
+│   │   │   ├── notification_settings.py          # Per-mine destination settings (Telegram, WhatsApp, Webhooks) and event toggles
 │   │   │   ├── qr_token.py                       # QR badge token entity with partial unique active index
 │   │   │   ├── reading.py                        # Telemetry readings table with partial unique index
 │   │   │   ├── tunnel.py                         # Underground mine tunnels table
@@ -157,7 +162,7 @@ coal-mine-subsidence-monitoring/
 │   │   │   ├── mines.py                          # GET/POST /api/mines, /api/mines/{id}/tunnels, /api/mines/{id}/gateways
 │   │   │   ├── node_commands.py                  # POST /api/nodes/{id}/commands manual buzzer trigger
 │   │   │   ├── nodes.py                          # GET /api/nodes telemetry list
-│   │   │   ├── notifications.py                  # GET / POST /api/notifications/config
+│   │   │   ├── notifications.py                  # GET/PUT /api/mines/{id}/notification-settings, POST .../test, GET /api/notifications
 │   │   │   ├── placements.py                     # GET /api/placements, GET /api/unplaced, PATCH/DELETE /api/nodes/{id}/placement
 │   │   │   ├── reports.py                        # POST /api/reports, GET /api/reports, PATCH /api/reports/{id}
 │   │   │   ├── users.py                          # GET/POST /api/users, PATCH/DELETE /api/users/{id}
@@ -169,6 +174,7 @@ coal-mine-subsidence-monitoring/
 │   │   │   ├── mine_profile.py                   # Mine profile 5-group schemas, worker-safe view, contacts & production schemas
 │   │   │   ├── mines.py                          # Mine, tunnel, and gateway creation request schemas
 │   │   │   ├── node_commands.py                  # CreateCommandRequest, CommandResponse
+│   │   │   ├── notifications.py                  # Masked settings view, destination update schema, and test dispatch schemas
 │   │   │   ├── nodes.py                          # WorkerNodeView (strict leakage prevention) & SuperiorNodeView
 │   │   │   ├── placements.py                     # PlacementsResponse, WorkerPlacementView, SuperiorPlacementView
 │   │   │   ├── reports.py                        # CreateReportRequest, UpdateReportRequest, SuperiorReportView, WorkerReportView
@@ -198,6 +204,11 @@ coal-mine-subsidence-monitoring/
 │   │   │   ├── mine_contacts_service.py          # Atomic emergency contacts replace and rank uniqueness validation
 │   │   │   ├── mine_headcount_service.py         # Headcount by shift & tunnel with lookahead in constant queries
 │   │   │   ├── mine_profile_service.py           # Superior 5-group assembly, trimmed worker-safe model, profile updates
+│   │   │   ├── notification_channels.py          # Outbound HTTP adapters for Telegram, WhatsApp (Twilio), and Webhooks with HMAC
+│   │   │   ├── notification_messages.py          # Privacy-enforcing alert text formatter (strictly zero worker PII)
+│   │   │   ├── notification_service.py           # Transactional outbox enqueue, claim_due (SKIP LOCKED), and retry management
+│   │   │   ├── notification_worker.py            # Standalone notification dispatcher cycle and log retention purge
+│   │   │   ├── webhook_guard.py                  # SSRF guard rejecting loopback, private, multicast, and non-public IP ranges
 │   │   │   ├── node_command_service.py           # Command queueing, sequence wrapping, line encoding, echo acknowledgment
 │   │   │   ├── node_placement.py                 # Node placement completeness helpers and expressions
 │   │   │   ├── node_serializer.py                # Telemetry dictionary serializer (superior & worker views)
@@ -312,6 +323,18 @@ Configuration is loaded from `.env` in the repository root using `python-dotenv`
 | `REPORT_RATE_PER_HOUR` | Step 8 | Maximum problem reports a single worker user can submit per hour before 429 rate limit (min 1, max 100) | `20` |
 | `REPORT_MAX_AGE_DAYS_WORKER_VIEW` | Step 8 | Maximum lookback age in days for reports visible in worker self-service view (min 1, max 365) | `90` |
 | `SHIFT_LOOKAHEAD_H` | Step 9 | Hours ahead to look for upcoming shift assignments in mine headcount breakdown (positive integer) | `12` |
+| `NOTIFICATIONS_ENABLED` | Step 10 | Global toggle to enable/disable outbound notification enqueue and background worker | `true` |
+| `TELEGRAM_BOT_TOKEN` | Step 10 | Telegram Bot API token from @BotFather (e.g. `123456:ABC-DEF...`) | (User secret) |
+| `TWILIO_ACCOUNT_SID` | Step 10 | Twilio Account SID (`AC...`) for WhatsApp messaging | (User secret) |
+| `TWILIO_AUTH_TOKEN` | Step 10 | Twilio Auth Token for WhatsApp API basic authentication | (User secret) |
+| `TWILIO_WHATSAPP_FROM` | Step 10 | Twilio WhatsApp sender number (e.g. `+14155238886` or WhatsApp sandbox sender) | `+14155238886` |
+| `WEBHOOK_SIGNING_SECRET` | Step 10 | HMAC-SHA256 signing secret for webhook payloads (min 32 chars, no `CHANGE_ME`) | (User secret) |
+| `NOTIFY_MAX_ATTEMPTS` | Step 10 | Maximum delivery attempts before notification row is marked 'failed' (min 1, max 20) | `5` |
+| `NOTIFY_BACKOFF_BASE_S` | Step 10 | Base backoff interval in seconds for exponential retry calculation (delay = base * 2^(attempts-1)) | `10` |
+| `NOTIFY_HTTP_TIMEOUT_S` | Step 10 | HTTP request timeout in seconds for outbound dispatches (min 1, max 30) | `5` |
+| `NOTIFY_LOG_RETENTION_DAYS` | Step 10 | Retention period in days for notification log records before automated purge | `30` |
+| `DASHBOARD_BASE_URL` | Step 10 | Optional public HTTPS base URL for dashboard deep links in notification messages | `https://monitor.example.com` |
+| `NOTIFY_ALLOW_HTTP_WEBHOOK` | Step 10 | Dev-only flag allowing plain HTTP webhook targets (loud startup warning logged) | `false` |
 
 ---
 
@@ -405,7 +428,7 @@ bash tools/backup_db.sh
 
 ## 6. Data Model
 
-The schema is managed strictly via Alembic migrations. The database contains these 21 core tables:
+The schema is managed strictly via Alembic migrations. The database contains these 23 core tables:
 
 ### 1. `companies`
 - `id` (`Integer`, PK, autoincrement)
@@ -746,6 +769,48 @@ The schema is managed strictly via Alembic migrations. The database contains the
 > 4. Otherwise, `None`.  
 > This implements our reading of the specification's "own tunnel" scoping rule. Miners receive `[current_tunnel]` (or `[]` if unassigned), restricting `/api/nodes`, `/api/placements`, and `/api/mines/{id}/tunnels` strictly to their assigned tunnel. Foremen and superiors receive `None` (unrestricted visibility across permitted mines).
 
+### 22. `notification_settings`
+- `mine_id` (`Integer`, PK, FK -> `mines.id` ON DELETE CASCADE)
+- `telegram_enabled` (`Boolean`, nullable=False, server_default=`false`)
+- `telegram_chat_id` (`String(64)`, nullable=True)
+- `whatsapp_enabled` (`Boolean`, nullable=False, server_default=`false`)
+- `whatsapp_to` (`String(20)`, nullable=True)
+- `webhook_enabled` (`Boolean`, nullable=False, server_default=`false`)
+- `webhook_url` (`String(500)`, nullable=True)
+- `on_incident_open` (`Boolean`, nullable=False, server_default=`true`)
+- `on_incident_close` (`Boolean`, nullable=False, server_default=`false`)
+- `on_sos` (`Boolean`, nullable=False, server_default=`true`)
+- `on_offline` (`Boolean`, nullable=False, server_default=`true`)
+- `updated_by` (`Integer`, FK -> `users.id` ON DELETE SET NULL, nullable=True)
+- `updated_at` (`TIMESTAMPTZ`, nullable=False, server_default=`now()`)
+- **Constraints**:
+  - `CHECK (NOT telegram_enabled OR telegram_chat_id IS NOT NULL)`
+  - `CHECK (NOT whatsapp_enabled OR whatsapp_to IS NOT NULL)`
+  - `CHECK (NOT webhook_enabled OR webhook_url IS NOT NULL)`
+
+### 23. `notification_log`
+- `id` (`BigInteger`, PK, autoincrement)
+- `mine_id` (`Integer`, FK -> `mines.id` ON DELETE CASCADE, nullable=False, index)
+- `event` (`String(20)`, nullable=False, check: `'incident_open'`, `'incident_close'`, `'sos_report'`, `'offline_alert'`, `'test'`)
+- `ref_type` (`String(16)`, nullable=True)
+- `ref_id` (`BigInteger`, nullable=True)
+- `incident_id` (`BigInteger`, FK -> `incidents.id` ON DELETE SET NULL, nullable=True, index)
+- `channel` (`String(10)`, nullable=False, check: `'telegram'`, `'whatsapp'`, `'webhook'`)
+- `status` (`String(10)`, nullable=False, server_default=`'pending'`, check: `'pending'`, `'sent'`, `'failed'`, `'skipped'`)
+- `attempts` (`SmallInteger`, nullable=False, server_default=`0`)
+- `next_attempt_at` (`TIMESTAMPTZ`, nullable=False, server_default=`now()`)
+- `created_at` (`TIMESTAMPTZ`, nullable=False, server_default=`now()`)
+- `sent_at` (`TIMESTAMPTZ`, nullable=True)
+- `result` (`String(200)`, nullable=True): Sanitized outcome text (e.g. "HTTP 200", "HTTP 500", "channel not configured").
+- `message` (`String(1000)`, nullable=False): Privacy-compliant alert message (<= 500 chars, no worker PII).
+- `dedupe_key` (`String(120)`, nullable=False)
+- **Constraints**:
+  - `UNIQUE (dedupe_key, channel)` named `uq_notification_dedupe`
+  - `CHECK ((status = 'sent' AND sent_at IS NOT NULL) OR (status <> 'sent' AND sent_at IS NULL))`
+- **Indexes**:
+  - Partial Index: `CREATE INDEX ix_notification_log_pending ON notification_log (status, next_attempt_at) WHERE status = 'pending'`
+  - Composite Index: `CREATE INDEX ix_notification_log_mine_created ON notification_log (mine_id, created_at DESC)`
+
 ### 6.1. Connectivity Rules and Watchdog Architecture
 
 - **Single Source of Truth (`services/connectivity.py`)**:
@@ -842,7 +907,7 @@ Radio command sent by gateway over ESP-NOW:
 
 ## 8. API Reference and Consolidated Access Policy Matrix
 
-> **Automated Policy Matrix**: The table below is provably complete across all **71** API routes registered in FastAPI. It is generated by inspecting `app.openapi()` and the test suite's `POLICY_TABLE` (`tests/test_auth_and_roles.py`).  
+> **Automated Policy Matrix**: The table below is provably complete across all **73** API routes registered in FastAPI. It is generated by inspecting `app.openapi()` and the test suite's `POLICY_TABLE` (`tests/test_auth_and_roles.py`).  
 > - **Roles**: **Manager** (full administrative scope), **Safety Officer** (geotechnical & evacuation authority), **Engineer** (hardware & shifts), **Foreman** (shift & own tunnel scanner), **Miner** (restricted worker-safe view), and **Anonymous** (unauthenticated).  
 > - **Status Indicators**: `Allowed` (unrestricted within tenant), `Scoped` (permitted mines only), `Own Tunnel` (restricted to currently assigned tunnel), `403` (forbidden for role), `401` (unauthenticated).
 
@@ -889,6 +954,9 @@ Radio command sent by gateway over ESP-NOW:
 | `POST` | `/api/mines` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Creates a new coal mine site for the manager's company and assigns creator. |
 | `PUT` | `/api/mines/{id}/contacts` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Replaces all emergency key contacts for a mine (superiors only). |
 | `GET` | `/api/mines/{id}/headcount` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Returns live headcount and shift lookahead for a mine (superiors only). |
+| `GET` | `/api/mines/{id}/notification-settings` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Returns masked notification settings and channel availability for a mine. |
+| `PUT` | `/api/mines/{id}/notification-settings` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Replaces notification settings and destinations for a mine (Manager only). |
+| `POST` | `/api/mines/{id}/notification-settings/test` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Enqueues test alert across all enabled channels for a mine (Manager only, 5/hr rate limit). |
 | `GET` | `/api/mines/{id}/production` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Returns daily production records and monthly summary (superiors only). |
 | `PUT` | `/api/mines/{id}/production` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Upserts daily production entries (superiors only). |
 | `GET` | `/api/mines/{id}/profile` | `any_role_scoped` | Scoped | Scoped | Scoped | Scoped | Scoped | 401 | Returns full profile for superiors or trimmed worker-safe model for workers. |
@@ -902,9 +970,7 @@ Radio command sent by gateway over ESP-NOW:
 | `POST` | `/api/nodes/{node_id}/commands` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Superiors only: creates a downlink command for a sensor node. |
 | `DELETE` | `/api/nodes/{node_id}/placement` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Removes a node from surface placement back to unplaced status (superiors only). |
 | `PATCH` | `/api/nodes/{node_id}/placement` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Assigns tunnel and geospatial coordinates to a node (superiors only, mine scoped). |
-| `GET` | `/api/notifications/config` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Returns stored notification channel settings (superiors only). |
-| `POST` | `/api/notifications/config` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Saves notification channel settings (superiors only). |
-| `POST` | `/api/notifications/test` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Superiors-only stub for testing alert delivery channels. |
+| `GET` | `/api/notifications` | `superiors_scoped` | Scoped | Scoped | Scoped | 403 | 403 | 401 | Returns delivery audit log records scoped to permitted mines (superiors only). |
 | `GET` | `/api/placements` | `any_role_scoped` | Scoped | Scoped | Scoped | Scoped | Scoped | 401 | Returns placed nodes and their coordinates scoped to permitted mines (any role). |
 | `GET` | `/api/reports` | `any_role_scoped` | Scoped | Scoped | Scoped | Scoped | Scoped | 401 | Lists reports scoped by user role. Superiors get full view; workers get own worker-safe view. |
 | `POST` | `/api/reports` | `any_role_scoped` | Scoped | Scoped | Scoped | Scoped | Scoped | 401 | Any logged-in user can raise a worker report. Returns worker-safe view. |
@@ -919,9 +985,6 @@ Radio command sent by gateway over ESP-NOW:
 | `DELETE` | `/api/workers/{worker_id}/badge` | `manager_or_foreman` | Allowed | 403 | 403 | Allowed | 403 | 401 | Revokes active QR badges for a worker (Manager, or Foreman for their current tunnel). |
 | `POST` | `/api/workers/{worker_id}/badge` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Issues a new cryptographic QR badge for an active foreman or miner (Manager only). |
 | `PUT` | `/api/workers/{worker_id}/profile` | `manager_only` | Allowed | 403 | 403 | 403 | 403 | 401 | Creates or updates a worker's profile (Manager only; audited without contact leaks). |
-
-### Planned Routes (Future Steps)
-- Outbound alert notification delivery and logging (*Planned - Step 10*)
 
 ---
 
@@ -1011,7 +1074,7 @@ Radio command sent by gateway over ESP-NOW:
 | **Step 8** | Worker reports and SOS | **Done** | Report form, inbox, status flow, node SOS button and SOS packet. Report moves through workflow; button press shows as SOS report within seconds. | 2026-11-23 |
 | **Step 8.5** | Step 8 Follow-up & SOS Hardening | **Done** | SOS incident idempotency on `uq_incidents_open_sos`, resolved report guard, 503 retry contract without reading loss, duplicate reading SOS trigger, and comprehensive follow-up test suite. | 2026-11-24 |
 | **Step 9** | Mine profile and output tracking | **Done** | Profile fields, contacts hierarchy, plan vs actual output. Mine page shows all five profile groups. Superiors edit within scope; workers see trimmed worker-safe model. | 2026-11-24 |
-| **Step 10** | Outbound notifications and extras | *Not started* | Telegram/WhatsApp outbound dispatch, PDF export, WebSocket updates. | — |
+| **Step 10** | Outbound notifications (Telegram, WhatsApp, Webhooks) | **Done** | Transactional outbox enqueue on incident open/close, SOS report, and offline alert; background worker dispatch with exponential retries and audit logging; strict privacy rule (zero worker PII); Manager UI for configuration and live test dispatches. *(Note: PDF export and WebSockets are optional/out-of-scope for the prototype)*. | 2026-11-24 |
 
 ---
 
@@ -1077,7 +1140,104 @@ The following firmware features from Steps 4, 7, and 8 require modifying hardwar
 
 ---
 
+### 11.4. Outbound Notifications, Outbox Architecture & Privacy (Step 10)
+
+- **Transactional Outbox Guarantee (`services/notification_service.py`)**:
+  - `notification_service.enqueue(...)` executes directly within the caller's active database session without committing.
+  - When an incident opens (manual, automatic critical, or device SOS), an SOS report is filed, or the watchdog detects an offline gateway/node, notification rows are created atomically with the event.
+  - **Savepoint Isolation**: Outbox insertion is wrapped in a nested savepoint (`begin_nested()`). Any notification failure is logged at `ERROR` level with full traceback and **never** raises into the caller, ensuring sensor ingest, roll call snapshots, and watchdog cycles remain 100% resilient.
+  - **Deduplication**: Enforced via PostgreSQL `UNIQUE (dedupe_key, channel)` where `dedupe_key = "<event>:<ref_type>:<ref_id>"` (e.g. `incident_open:incident:42`). Repeated device SOS signals within the merge window do not produce duplicate notifications.
+
+- **Background Dispatch Worker (`services/notification_worker.py` & `watchdog_runner.py`)**:
+  - Executes as an independent sub-cycle in the background runner every 5 seconds under PostgreSQL advisory lock `8392107`.
+  - Claims due rows using `SELECT ... FOR UPDATE SKIP LOCKED` on pending rows with `next_attempt_at <= now` (up to 50 rows per batch).
+  - Commits each row delivery attempt in its own independent transaction so worker failures or timeout retries never block batch progress.
+  - **Exponential Backoff**: After attempt $k$, `next_attempt_at = now + (NOTIFY_BACKOFF_BASE_S * 2^(attempts-1))` capped at 600 seconds (10s, 20s, 40s, 80s, 160s). Fails permanently after `NOTIFY_MAX_ATTEMPTS` (5).
+  - **Log Retention & Purge**: Sent, failed, and skipped rows older than `NOTIFY_LOG_RETENTION_DAYS` (30 days) are pruned automatically once per hour.
+
+- **Strict Privacy Guarantees (`services/notification_messages.py`)**:
+  - Alert messages are built **exclusively** from safe metadata: event type, mine name, tunnel name (or "unplaced node N / gateway NAME"), incident severity level, aggregate headcounts, UTC timestamp, and optional dashboard URL.
+  - **Zero Worker PII**: Worker names, employee IDs, phone numbers, free-text problem descriptions, and resolution notes are strictly prohibited and never included in external alert payloads. Enforced centrally in `build_message()`.
+
+- **SSRF Guard & Webhook Security (`services/webhook_guard.py` & `notification_channels.py`)**:
+  - Validates webhook target URLs: enforces HTTPS scheme (`NOTIFY_ALLOW_HTTP_WEBHOOK=true` allowed only in dev with loud startup warning), forbids credentials (`userinfo`), and rejects literal `localhost`.
+  - Performs DNS resolution on destination hostnames: **every** resolved IP address must be public. Rejects IPv4/IPv6 loopback (`127.0.0.0/8`, `::1`), RFC 1918 private (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local/cloud metadata (`169.254.0.0/16`), multicast, reserved, unspecified (`0.0.0.0`), and IPv4-mapped IPv6 ranges.
+  - **DNS Rebinding Limitation Notice**: Destination validation occurs at settings update time (`PUT /api/mines/{id}/notification-settings`). In production environments subject to dynamic attacker DNS rebinding, resolve addresses at connection time or route outbound webhooks through a dedicated egress filtering proxy.
+  - **HMAC-SHA256 Signature Verification**: Every webhook delivery includes headers `X-CMB-Timestamp` (UNIX epoch seconds) and `X-CMB-Signature` (hex HMAC-SHA256 computed over `<timestamp>.<raw_body>` with `WEBHOOK_SIGNING_SECRET`).
+
+#### Webhook Signature Verification Example (Receiver in Python)
+```python
+import hashlib
+import hmac
+import time
+from fastapi import FastAPI, HTTPException, Header, Request
+
+app = FastAPI()
+WEBHOOK_SIGNING_SECRET = "your-shared-32-byte-secret-key-here"
+
+@app.post("/alerts/webhook")
+async def receive_alert(
+    request: Request,
+    x_cmb_timestamp: str = Header(...),
+    x_cmb_signature: str = Header(...),
+):
+    # 1. Anti-replay check (5-minute tolerance)
+    now = int(time.time())
+    if abs(now - int(x_cmb_timestamp)) > 300:
+        raise HTTPException(status_code=400, detail="Timestamp out of tolerance")
+
+    # 2. Compute expected HMAC-SHA256 over "<timestamp>.<raw_body>"
+    raw_body = await request.body()
+    signed_payload = f"{x_cmb_timestamp}.".encode("utf-8") + raw_body
+    expected_sig = hmac.new(
+        WEBHOOK_SIGNING_SECRET.encode("utf-8"),
+        signed_payload,
+        hashlib.sha256,
+    ).hexdigest()
+
+    # 3. Constant-time signature comparison
+    if not hmac.compare_digest(expected_sig, x_cmb_signature):
+        raise HTTPException(status_code=401, detail="Invalid HMAC signature")
+
+    payload = await request.json()
+    print(f"Received verified alert for mine {payload['mine']}: {payload['text']}")
+    return {"status": "ok"}
+```
+
+#### Channel Setup Guides
+- **Telegram Bot Setup**:
+  1. Open Telegram and search for `@BotFather`.
+  2. Send `/newbot`, follow prompts to name the bot, and receive the HTTP API token (`TELEGRAM_BOT_TOKEN`).
+  3. Create a Telegram channel or group for mine supervisors, add the bot as an administrator, and retrieve the group `chat_id` (e.g. `-100xxxxxxxxxx`).
+  4. In the Mine Settings modal on the dashboard, check "Telegram", enter the `chat_id`, and click "Send Test Notification".
+- **Twilio WhatsApp Sandbox Setup**:
+  1. Sign in to your Twilio Console and navigate to **Messaging -> Try WhatsApp -> Send a WhatsApp message**.
+  2. Copy your `Account SID` and `Auth Token` into `.env` as `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN`.
+  3. Note the Twilio sandbox phone number (e.g. `+14155238886`) and set `TWILIO_WHATSAPP_FROM=+14155238886`.
+  4. Supervisors join the sandbox by sending the join code (e.g. `join <word>`) from their personal WhatsApp to the sandbox number.
+  5. In Mine Settings, enable WhatsApp, enter the supervisor phone number in E.164 format (e.g. `+00 000 000 0000`), and save.
+
 ## 12. Changelog
+
+### 2026-11-24 - Step 10: Telegram, WhatsApp, and Webhook Notifications
+- **Transactional Outbox & Delivery Worker**:
+  - Implemented transactional `enqueue()` in caller's PostgreSQL session with best-effort savepoint isolation.
+  - Created `notification_settings` and `notification_log` database tables with CHECK constraints, partial index on pending status, and unique deduplication keys.
+  - Implemented background delivery worker running under PostgreSQL advisory lock `8392107` every 5s with `SELECT ... FOR UPDATE SKIP LOCKED` and exponential retry backoff.
+- **Multi-Channel Alert Adapters**:
+  - Built Telegram Bot adapter dispatching to group/channel chat IDs with retryable 429 backoff.
+  - Built WhatsApp adapter communicating via Twilio Messages API with Basic Authentication.
+  - Built Webhook adapter with cryptographic HMAC-SHA256 signature headers (`X-CMB-Timestamp`, `X-CMB-Signature`).
+- **SSRF Destination Guard**:
+  - Added strict SSRF destination validation enforcing HTTPS and rejecting loopback, RFC 1918 private, link-local, multicast, reserved, unspecified, and non-public IP resolutions.
+- **Privacy Enforcement**:
+  - Enforced single-source message formatter strictly omitting worker names, employee numbers, phone numbers, problem descriptions, and notes.
+- **Manager Dashboard & Delivery Audit**:
+  - Added `#notifModal` with manager configuration controls, channel availability indicators, rate-limited test dispatches, and 10s auto-refreshing delivery audit log table.
+- **Schema Cleanup**:
+  - Dropped redundant single-column indexes `ix_worker_reports_mine_id` and `ix_worker_reports_user_id`.
+- **Test Suite**:
+  - Added 31 comprehensive integration tests in `server/tests/test_step10_notifications.py` bringing total passed test count to 192.
 
 ### 2026-11-24 - Phase C: Final Hardening, Operational Tooling, and Architecture Verification
 - **Database Backup & Recovery Tooling**:

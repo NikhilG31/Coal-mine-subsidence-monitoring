@@ -15,6 +15,8 @@ from app.config import (
     ALLOW_UNKEYED_INGEST,
     COMMANDS_REQUIRE_HTTPS,
     CORS_ORIGINS,
+    NOTIFY_ALLOW_HTTP_WEBHOOK,
+    get_configured_channels,
     validate_jwt_secret,
 )
 
@@ -32,6 +34,20 @@ if not COMMANDS_REQUIRE_HTTPS:
         "*** SECURITY WARNING: COMMANDS_REQUIRE_HTTPS is DISABLED! "
         "Node downlink commands may be transmitted over plaintext HTTP! ***"
     )
+
+if NOTIFY_ALLOW_HTTP_WEBHOOK:
+    logging.getLogger("uvicorn.error").warning(
+        "*** SECURITY WARNING: NOTIFY_ALLOW_HTTP_WEBHOOK is ENABLED! "
+        "Insecure HTTP webhook endpoints permitted (DEV ONLY)! ***"
+    )
+
+_conf_channels = get_configured_channels()
+logging.getLogger("uvicorn.info").info(
+    "Notification channels configured: telegram=%s, whatsapp=%s, webhook=%s",
+    _conf_channels["telegram"],
+    _conf_channels["whatsapp"],
+    _conf_channels["webhook"],
+)
 
 from app.routers import (
     alerts,

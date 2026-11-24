@@ -1041,66 +1041,8 @@ async function handleCreateUserSubmit(e) {
 }
 
 // ==========================================
-// NOTIFICATION CHANNELS CONFIG MODAL
+// NOTIFICATION CHANNELS & AUDIT LOG (HANDLED IN static/notifications.js)
 // ==========================================
-
-async function openNotifModal() {
-  document.getElementById("notifModal").classList.add("open");
-  try {
-    const data = await apiFetch("/api/notifications/config");
-    const cfg = data.config || {};
-    document.getElementById("cfgRepeatInterval").value = cfg.repeat_interval_s || 900;
-    document.getElementById("cfgWebhookUrl").value = cfg.webhook_url || "";
-    document.getElementById("cfgTelegramToken").value = cfg.telegram_bot_token || "";
-    document.getElementById("cfgTelegramChatId").value = cfg.telegram_chat_id || "";
-    document.getElementById("cfgTwilioSid").value = cfg.twilio_sid || "";
-    document.getElementById("cfgTwilioToken").value = cfg.twilio_token || "";
-    document.getElementById("cfgTwilioFrom").value = cfg.twilio_from || "";
-    document.getElementById("cfgTwilioTo").value = cfg.twilio_to || "";
-    document.getElementById("cfgTwilioIsWhatsApp").checked = !!cfg.twilio_is_whatsapp;
-  } catch (err) {
-    console.error("Config fetch error:", err);
-  }
-}
-
-function closeNotifModal() {
-  document.getElementById("notifModal").classList.remove("open");
-}
-
-async function handleSaveNotifConfig(e) {
-  e.preventDefault();
-  const payload = {
-    repeat_interval_s: parseInt(document.getElementById("cfgRepeatInterval").value, 10) || 900,
-    webhook_url: document.getElementById("cfgWebhookUrl").value.trim(),
-    telegram_bot_token: document.getElementById("cfgTelegramToken").value.trim(),
-    telegram_chat_id: document.getElementById("cfgTelegramChatId").value.trim(),
-    twilio_sid: document.getElementById("cfgTwilioSid").value.trim(),
-    twilio_token: document.getElementById("cfgTwilioToken").value.trim(),
-    twilio_from: document.getElementById("cfgTwilioFrom").value.trim(),
-    twilio_to: document.getElementById("cfgTwilioTo").value.trim(),
-    twilio_is_whatsapp: document.getElementById("cfgTwilioIsWhatsApp").checked
-  };
-
-  try {
-    await apiFetch("/api/notifications/config", {
-      method: "POST",
-      body: JSON.stringify(payload)
-    });
-    alert("Notification configurations saved successfully.");
-    closeNotifModal();
-  } catch (err) {
-    alert("Error saving settings: " + err.message);
-  }
-}
-
-async function testNotificationChannel(channel) {
-  try {
-    const res = await apiFetch(`/api/notifications/test?channel=${channel}`, { method: "POST" });
-    alert(`Success: ${res.message}`);
-  } catch (err) {
-    alert(`Test failed: ${err.message}`);
-  }
-}
 
 // ==========================================
 // DEMO & SIMULATOR CONTROLS

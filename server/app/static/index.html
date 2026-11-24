@@ -412,87 +412,116 @@
     </div>
   </div>
 
-  <!-- Modal: Notification Channels & Alert Integrations -->
+  <!-- Modal: Notification Settings & Alert Destinations (Step 10) -->
   <div id="notifModal" class="modal-overlay">
-    <div class="modal-window" style="max-width:600px;">
+    <div class="modal-window" style="max-width:850px; width:95%; max-height:90vh; overflow-y:auto;">
       <div class="modal-header">
-        <h3>🔔 ALERT NOTIFICATION INTEGRATIONS</h3>
+        <h3 id="notifModalTitle">🔔 NOTIFICATION SETTINGS &amp; ALERT DESTINATIONS</h3>
         <button class="neo-btn btn-small" onclick="closeNotifModal()">✖</button>
       </div>
       <div class="modal-body">
-        
-        <div class="doc-callout">
-          <h4>Deduplicated Notification Architecture</h4>
-          <p>
-            Alerts automatically trigger whenever a node enters <strong>Watch, Warning, or Critical</strong> status.
-            To prevent spamming every 5 seconds, identical repeat readings are suppressed for a configurable reminder period.
-          </p>
+        <!-- Mine Selector -->
+        <div class="form-group" style="margin-bottom:12px;">
+          <label for="notifMineSelect"><strong>Active Mine Scope</strong></label>
+          <select id="notifMineSelect" class="form-select" onchange="handleNotifMineChange()"></select>
         </div>
 
-        <form onsubmit="handleSaveNotifConfig(event)">
-          
-          <div class="form-group">
-            <label for="cfgRepeatInterval">Deduplication Repeat Reminder (seconds)</label>
-            <input type="number" id="cfgRepeatInterval" class="form-input" value="900" min="60" max="86400">
-            <div class="form-help">Default 900s (15 minutes). Prevents continuous 5-second spam.</div>
+        <!-- Server Unconfigured Channels Warning Banner -->
+        <div id="notifUnconfiguredBanner" class="zine-box" style="display:none; background:#fef3c7; border:2px solid #f59e0b; padding:10px; margin-bottom:14px; font-size:12px; color:#92400e;">
+          ⚠️ <strong>Server Notice:</strong> The following alert channels are not configured with environment credentials on the server:
+          <span id="notifUnconfiguredChannelsList" style="font-weight:700;"></span>. Enabled events for unconfigured channels will be created with status <em>skipped</em>.
+        </div>
+
+        <!-- Read-Only Banner for Superiors (Non-Managers) -->
+        <div id="notifReadOnlyBanner" class="zine-box" style="display:none; background:#e0f2fe; border:2px solid #0284c7; padding:8px; margin-bottom:14px; font-size:12px; color:#0369a1;">
+          ℹ️ <strong>Read-Only Access:</strong> Destinations and settings are configured per mine by company Managers. Values are masked for security.
+        </div>
+
+        <form id="notifSettingsForm" onsubmit="handleSaveNotifSettings(event)">
+          <!-- Channel Destinations -->
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:12px; margin-bottom:16px;">
+            <!-- Telegram -->
+            <div class="zine-box" style="padding:10px; background:var(--paper);">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <strong style="font-family:var(--condensed);">1. TELEGRAM ALERTS</strong>
+                <label style="cursor:pointer; display:inline-flex; align-items:center; gap:4px; font-size:12px;">
+                  <input type="checkbox" id="cfgTelegramEnabled"> Enabled
+                </label>
+              </div>
+              <div class="form-group" style="margin-bottom:0;">
+                <label for="cfgTelegramChatId" style="font-size:11px;">Chat ID / Group Channel ID</label>
+                <input type="text" id="cfgTelegramChatId" class="form-input" placeholder="e.g. -100123456789 or @channel">
+              </div>
+            </div>
+
+            <!-- WhatsApp -->
+            <div class="zine-box" style="padding:10px; background:var(--paper);">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <strong style="font-family:var(--condensed);">2. WHATSAPP (TWILIO)</strong>
+                <label style="cursor:pointer; display:inline-flex; align-items:center; gap:4px; font-size:12px;">
+                  <input type="checkbox" id="cfgWhatsappEnabled"> Enabled
+                </label>
+              </div>
+              <div class="form-group" style="margin-bottom:0;">
+                <label for="cfgWhatsappTo" style="font-size:11px;">Recipient E.164 Phone Number</label>
+                <input type="text" id="cfgWhatsappTo" class="form-input" placeholder="+1234567890">
+              </div>
+            </div>
+
+            <!-- Webhook -->
+            <div class="zine-box" style="padding:10px; background:var(--paper);">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <strong style="font-family:var(--condensed);">3. AUTOMATION WEBHOOK</strong>
+                <label style="cursor:pointer; display:inline-flex; align-items:center; gap:4px; font-size:12px;">
+                  <input type="checkbox" id="cfgWebhookEnabled"> Enabled
+                </label>
+              </div>
+              <div class="form-group" style="margin-bottom:0;">
+                <label for="cfgWebhookUrl" style="font-size:11px;">Webhook HTTPS URL</label>
+                <input type="text" id="cfgWebhookUrl" class="form-input" placeholder="https://api.example.com/alerts">
+              </div>
+            </div>
           </div>
 
-          <!-- Webhook -->
-          <div class="zine-box" style="margin-bottom:12px; padding:10px; background:var(--paper);">
-            <div style="font-family:var(--condensed); font-weight:700;">1. AUTOMATION WEBHOOK (Slack / Discord / Zapier)</div>
-            <div class="form-group" style="margin-top:6px;">
-              <input type="url" id="cfgWebhookUrl" class="form-input" placeholder="https://webhook.site/... or Discord/Slack URL">
-            </div>
-            <button type="button" class="neo-btn btn-small" onclick="testNotificationChannel('webhook')">Test Webhook</button>
-          </div>
-
-          <!-- Telegram -->
-          <div class="zine-box" style="margin-bottom:12px; padding:10px; background:var(--paper);">
-            <div style="font-family:var(--condensed); font-weight:700;">2. TELEGRAM BOT ALERTS</div>
-            <div class="form-help">Create a bot with @BotFather and retrieve Bot Token &amp; Chat ID.</div>
-            <div class="form-group" style="margin-top:6px;">
-              <label>Bot Token</label>
-              <input type="text" id="cfgTelegramToken" class="form-input" placeholder="e.g. 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11">
-            </div>
-            <div class="form-group">
-              <label>Chat ID / Group Channel ID</label>
-              <input type="text" id="cfgTelegramChatId" class="form-input" placeholder="e.g. -100123456789 or 987654321">
-            </div>
-            <button type="button" class="neo-btn btn-small" onclick="testNotificationChannel('telegram')">Test Telegram</button>
-          </div>
-
-          <!-- Twilio WhatsApp & SMS -->
-          <div class="zine-box" style="margin-bottom:12px; padding:10px; background:var(--paper);">
-            <div style="font-family:var(--condensed); font-weight:700;">3. TWILIO WHATSAPP &amp; SMS DISPATCH</div>
-            <div class="form-help">Direct cellular dispatch to field safety engineers.</div>
-            <div class="form-group" style="margin-top:6px;">
-              <label>Account SID</label>
-              <input type="text" id="cfgTwilioSid" class="form-input" placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxx">
-            </div>
-            <div class="form-group">
-              <label>Auth Token</label>
-              <input type="password" id="cfgTwilioToken" class="form-input" placeholder="Twilio Auth Token">
-            </div>
-            <div class="form-group">
-              <label>From Number</label>
-              <input type="text" id="cfgTwilioFrom" class="form-input" placeholder="+14155238886 (or Twilio Phone)">
-            </div>
-            <div class="form-group">
-              <label>To Phone Number</label>
-              <input type="text" id="cfgTwilioTo" class="form-input" placeholder="+919876543210">
-            </div>
-            <div class="form-group">
-              <label>
-                <input type="checkbox" id="cfgTwilioIsWhatsApp"> Send as WhatsApp message (uses whatsapp:+ prefix)
+          <!-- Event Toggles -->
+          <div class="zine-box" style="padding:10px; background:var(--paper); margin-bottom:16px;">
+            <strong style="font-family:var(--condensed); display:block; margin-bottom:8px;">EVENT DISPATCH TOGGLES</strong>
+            <div style="display:flex; flex-wrap:wrap; gap:16px; font-size:12px;">
+              <label style="cursor:pointer; display:inline-flex; align-items:center; gap:6px;">
+                <input type="checkbox" id="cfgOnIncidentOpen" checked> Incident Opened (Critical / SOS / Broadcast)
+              </label>
+              <label style="cursor:pointer; display:inline-flex; align-items:center; gap:6px;">
+                <input type="checkbox" id="cfgOnIncidentClose"> Incident Closed
+              </label>
+              <label style="cursor:pointer; display:inline-flex; align-items:center; gap:6px;">
+                <input type="checkbox" id="cfgOnSos" checked> SOS Emergency Signal (New Report)
+              </label>
+              <label style="cursor:pointer; display:inline-flex; align-items:center; gap:6px;">
+                <input type="checkbox" id="cfgOnOffline" checked> Hardware Silence / Offline Alert
               </label>
             </div>
-            <button type="button" class="neo-btn btn-small" onclick="testNotificationChannel('twilio')">Test Twilio</button>
           </div>
 
-          <button type="submit" class="neo-btn btn-submit btn-primary" style="width:100%;">
-            Save Notification Settings
-          </button>
+          <!-- Action Buttons for Manager -->
+          <div id="notifManagerActions" style="display:flex; gap:10px; margin-bottom:20px;">
+            <button type="submit" id="btnSaveNotifSettings" class="neo-btn btn-submit btn-primary">
+              💾 Save Settings
+            </button>
+            <button type="button" id="btnTestNotif" class="neo-btn btn-gold" onclick="handleSendTestNotification()">
+              🚀 Send Test Notification
+            </button>
+          </div>
         </form>
+
+        <!-- Delivery Audit Log Section -->
+        <hr style="margin:20px 0; border:0; border-top:2px dashed var(--border);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+          <h4 style="margin:0; font-family:var(--condensed);">OUTBOX &amp; DELIVERY AUDIT LOG</h4>
+          <button type="button" class="neo-btn btn-small" onclick="loadDeliveryLog()">🔄 Refresh Log</button>
+        </div>
+        <div id="notifLogTableContainer" class="table-responsive" style="max-height:280px; overflow-y:auto;">
+          <div style="font-size:12px; color:var(--ink-3);">Loading delivery log...</div>
+        </div>
       </div>
     </div>
   </div>
@@ -888,6 +917,7 @@
   <script src="/static/incidents.js"></script>
   <script src="/static/reports.js"></script>
   <script src="/static/mine_profile.js"></script>
+  <script src="/static/notifications.js"></script>
 
   <!-- Modal: Worker QR Badge (Printable) -->
   <div id="badgeModal" class="modal-overlay">

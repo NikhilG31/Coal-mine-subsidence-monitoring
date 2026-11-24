@@ -25,9 +25,9 @@ class WorkerReport(Base):
     __tablename__ = "worker_reports"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    mine_id = Column(Integer, ForeignKey("mines.id", ondelete="CASCADE"), nullable=False, index=True)
+    mine_id = Column(Integer, ForeignKey("mines.id", ondelete="CASCADE"), nullable=False)
     tunnel_id = Column(Integer, ForeignKey("tunnels.id", ondelete="RESTRICT"), nullable=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     node_id = Column(Integer, ForeignKey("nodes.id", ondelete="SET NULL"), nullable=True, index=True)
     source = Column(String(6), nullable=False)
     type = Column(String(16), nullable=False)

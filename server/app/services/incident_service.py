@@ -19,7 +19,7 @@ from app.models.reading import Reading
 from app.models.tunnel import Tunnel
 from app.models.user import User
 from app.services.audit import record_audit
-from app.services import clock
+from app.services import clock, notification_service
 from app.services.headcount import inside_now
 from app.services.node_command_service import create_command
 from app.services.node_placement import PLACED_SQL_EXPRESSION, is_placed
@@ -163,6 +163,28 @@ def open_incident(
         company_id=mine.company_id,
     )
 
+    # 4. Outbox notification enqueue
+    target_tunnel = (
+        db.query(Tunnel).filter(Tunnel.id == tunnel_id).first()
+        if tunnel_id is not None
+        else None
+    )
+    notification_service.enqueue(
+        db=db,
+        mine_id=mine_id,
+        event="incident_open",
+        ref_type="incident",
+        ref_id=incident.id,
+        message_args={
+            "mine_name": mine.name,
+            "tunnel_name": target_tunnel.name if target_tunnel else None,
+            "level": level,
+            "counts": {"roster_size": len(worker_ids)},
+            "incident_id": incident.id,
+        },
+        now=now,
+    )
+
     return incident
 
 
@@ -293,6 +315,21 @@ def close_incident(
             "confirmed": bool(confirm_unaccounted),
         },
         company_id=locked_inc.mine.company_id if locked_inc.mine else 0,
+    )
+
+    # Outbox notification enqueue
+    notification_service.enqueue(
+        db=db,
+        mine_id=locked_inc.mine_id,
+        event="incident_close",
+        ref_type="incident",
+        ref_id=locked_inc.id,
+        message_args={
+            "mine_name": locked_inc.mine.name if locked_inc.mine else "",
+            "tunnel_name": locked_inc.tunnel.name if locked_inc.tunnel else None,
+            "incident_id": locked_inc.id,
+        },
+        now=now,
     )
 
     return locked_inc

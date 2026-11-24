@@ -20,7 +20,7 @@ from app.models.mine import Mine
 from app.models.node import Node
 from app.models.worker_report import WorkerReport
 from app.services.audit import record_audit
-from app.services import clock
+from app.services import clock, notification_service
 from app.services.incident_service import open_incident
 from app.services.node_placement import is_placed
 
@@ -225,6 +225,22 @@ def handle_device_sos(
             "tunnel_id": tunnel_id,
         },
         company_id=company_id,
+    )
+
+    # 9. Outbox notification enqueue for new SOS report
+    notification_service.enqueue(
+        db=db,
+        mine_id=gateway.mine_id,
+        event="sos_report",
+        ref_type="report",
+        ref_id=report.id,
+        message_args={
+            "mine_name": mine.name,
+            "tunnel_name": node.tunnel.name if (node_placed and node.tunnel) else None,
+            "node_label": f"node {node.node_no} ({gateway.name})" if not node_placed else f"node {node.node_no}",
+            "incident_id": report.incident_id,
+        },
+        now=now,
     )
 
     return report, True

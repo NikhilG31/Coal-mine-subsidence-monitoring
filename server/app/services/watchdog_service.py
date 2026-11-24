@@ -18,6 +18,7 @@ from app.models.gateway import Gateway
 from app.models.node import Node
 from app.models.node_command import NodeCommand
 from app.services.connectivity import gateway_is_online, node_is_online
+from app.services import notification_service
 from app.services.node_placement import is_placed
 
 logger = logging.getLogger(__name__)
@@ -130,6 +131,19 @@ def run_watchdog_cycle(db: Session, now: datetime.datetime) -> Dict[str, int]:
                     opened += 1
                     open_gw_alerts[gw.id] = new_alert
                     logger.info("Opened gateway_offline alert for gateway %d (%s) at %s", gw.id, gw.name, mine_name)
+                    notification_service.enqueue(
+                        db=db,
+                        mine_id=gw.mine_id,
+                        event="offline_alert",
+                        ref_type="alert",
+                        ref_id=new_alert.id,
+                        message_args={
+                            "mine_name": mine_name,
+                            "tunnel_name": None,
+                            "node_label": f"Gateway {gw.name}",
+                        },
+                        now=now,
+                    )
                 except IntegrityError:
                     pass  # Concurrent runner already opened this alert
 
@@ -196,6 +210,19 @@ def run_watchdog_cycle(db: Session, now: datetime.datetime) -> Dict[str, int]:
                                 node.id,
                                 node.node_no,
                                 gw.name,
+                            )
+                            notification_service.enqueue(
+                                db=db,
+                                mine_id=gw.mine_id,
+                                event="offline_alert",
+                                ref_type="alert",
+                                ref_id=new_node_alert.id,
+                                message_args={
+                                    "mine_name": mine_name,
+                                    "tunnel_name": tunnel_name,
+                                    "node_label": f"Node {node.node_no} ({gw.name})",
+                                },
+                                now=now,
                             )
                         except IntegrityError:
                             pass

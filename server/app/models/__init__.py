@@ -24,6 +24,8 @@ from app.models.node_command import NodeCommand
 from app.models.worker_report import WorkerReport
 from app.models.mine_contact import MineContact
 from app.models.mine_production import MineProduction
+from app.models.notification_settings import NotificationSettings
+from app.models.notification_log import NotificationLog
 
 __all__ = [
     "Base",
@@ -49,4 +51,6 @@ __all__ = [
     "WorkerReport",
     "MineContact",
     "MineProduction",
+    "NotificationSettings",
+    "NotificationLog",
 ]

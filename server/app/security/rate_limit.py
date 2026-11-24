@@ -22,6 +22,10 @@ _failures: Dict[Tuple[str, str], List[float]] = {}
 _scan_attempts: Dict[int, List[float]] = {}
 # Scanner user_id -> list of unknown-badge failure timestamps
 _unknown_badge_failures: Dict[int, List[float]] = {}
+# Manager user_id -> list of notification test attempt timestamps
+_notify_test_attempts: Dict[int, List[float]] = {}
+NOTIFY_TEST_MAX: int = 5
+NOTIFY_TEST_WINDOW_S: float = 3600.0
 
 
 def check_login_rate_limit(username: str, client_ip: str) -> Optional[int]:
@@ -119,9 +123,38 @@ def record_unknown_badge_failure(user_id: int) -> None:
         _unknown_badge_failures[user_id] = valid
 
 
+def check_notify_test_rate_limit(user_id: int) -> Optional[int]:
+    """Checks whether the user has exceeded notification test attempts (5/hr).
+
+    Returns:
+        Retry-After seconds if rate limited, or None if permitted.
+    """
+    now = time.time()
+    with _lock:
+        timestamps = _notify_test_attempts.get(user_id, [])
+        valid = [t for t in timestamps if now - t < NOTIFY_TEST_WINDOW_S]
+        _notify_test_attempts[user_id] = valid
+
+        if len(valid) >= NOTIFY_TEST_MAX:
+            oldest = valid[0]
+            return max(1, int(NOTIFY_TEST_WINDOW_S - (now - oldest)))
+        return None
+
+
+def record_notify_test_attempt(user_id: int) -> None:
+    """Records a notification test trigger timestamp for the user."""
+    now = time.time()
+    with _lock:
+        timestamps = _notify_test_attempts.get(user_id, [])
+        valid = [t for t in timestamps if now - t < NOTIFY_TEST_WINDOW_S]
+        valid.append(now)
+        _notify_test_attempts[user_id] = valid
+
+
 def clear_all_rate_limits() -> None:
     """Clears all in-memory rate limit counters (used by test suites)."""
     with _lock:
         _failures.clear()
         _scan_attempts.clear()
         _unknown_badge_failures.clear()
+        _notify_test_attempts.clear()

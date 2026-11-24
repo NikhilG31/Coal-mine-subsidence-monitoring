@@ -155,6 +155,73 @@ if SHIFT_LOOKAHEAD_H <= 0:
     raise ValueError("SHIFT_LOOKAHEAD_H must be positive")
 
 
+# Step 10: Notifications Configuration
+NOTIFICATIONS_ENABLED: bool = os.getenv("NOTIFICATIONS_ENABLED", "true").lower() in ("true", "1", "yes")
+TELEGRAM_BOT_TOKEN: Optional[str] = os.getenv("TELEGRAM_BOT_TOKEN")
+TWILIO_ACCOUNT_SID: Optional[str] = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN: Optional[str] = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_WHATSAPP_FROM: Optional[str] = os.getenv("TWILIO_WHATSAPP_FROM")
+WEBHOOK_SIGNING_SECRET: Optional[str] = os.getenv("WEBHOOK_SIGNING_SECRET")
+NOTIFY_MAX_ATTEMPTS: int = int(os.getenv("NOTIFY_MAX_ATTEMPTS", "5"))
+NOTIFY_BACKOFF_BASE_S: int = int(os.getenv("NOTIFY_BACKOFF_BASE_S", "10"))
+NOTIFY_HTTP_TIMEOUT_S: float = float(os.getenv("NOTIFY_HTTP_TIMEOUT_S", "5"))
+NOTIFY_LOG_RETENTION_DAYS: int = int(os.getenv("NOTIFY_LOG_RETENTION_DAYS", "30"))
+DASHBOARD_BASE_URL: Optional[str] = os.getenv("DASHBOARD_BASE_URL")
+NOTIFY_ALLOW_HTTP_WEBHOOK: bool = os.getenv("NOTIFY_ALLOW_HTTP_WEBHOOK", "false").lower() in ("true", "1", "yes")
+
+if NOTIFY_MAX_ATTEMPTS <= 0:
+    raise ValueError("NOTIFY_MAX_ATTEMPTS must be positive")
+if NOTIFY_BACKOFF_BASE_S <= 0:
+    raise ValueError("NOTIFY_BACKOFF_BASE_S must be positive")
+if NOTIFY_HTTP_TIMEOUT_S <= 0:
+    raise ValueError("NOTIFY_HTTP_TIMEOUT_S must be positive")
+if NOTIFY_LOG_RETENTION_DAYS <= 0:
+    raise ValueError("NOTIFY_LOG_RETENTION_DAYS must be positive")
+
+if WEBHOOK_SIGNING_SECRET and WEBHOOK_SIGNING_SECRET.strip():
+    _sec = WEBHOOK_SIGNING_SECRET.strip()
+    if len(_sec) < 32:
+        raise ValueError("WEBHOOK_SIGNING_SECRET must be at least 32 characters long.")
+    if "change_me" in _sec.lower():
+        raise ValueError("WEBHOOK_SIGNING_SECRET cannot contain 'CHANGE_ME'.")
+
+if DASHBOARD_BASE_URL and DASHBOARD_BASE_URL.strip():
+    _dash = DASHBOARD_BASE_URL.strip()
+    if not (_dash.startswith("https://") or (NOTIFY_ALLOW_HTTP_WEBHOOK and _dash.startswith("http://"))):
+        raise ValueError("DASHBOARD_BASE_URL must be a valid HTTPS URL.")
+
+
+def is_telegram_configured() -> bool:
+    """Returns True if Telegram bot credentials are fully configured."""
+    return bool(TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_TOKEN.strip())
+
+
+def is_whatsapp_configured() -> bool:
+    """Returns True if Twilio WhatsApp API credentials are fully configured."""
+    return bool(
+        TWILIO_ACCOUNT_SID
+        and TWILIO_ACCOUNT_SID.strip()
+        and TWILIO_AUTH_TOKEN
+        and TWILIO_AUTH_TOKEN.strip()
+        and TWILIO_WHATSAPP_FROM
+        and TWILIO_WHATSAPP_FROM.strip()
+    )
+
+
+def is_webhook_configured() -> bool:
+    """Returns True if Webhook signing secret is fully configured."""
+    return bool(WEBHOOK_SIGNING_SECRET and WEBHOOK_SIGNING_SECRET.strip())
+
+
+def get_configured_channels() -> dict:
+    """Returns mapping of notification channel to configuration availability."""
+    return {
+        "telegram": is_telegram_configured(),
+        "whatsapp": is_whatsapp_configured(),
+        "webhook": is_webhook_configured(),
+    }
+
+
 def validate_jwt_secret() -> None:
     """Enforces that JWT_SECRET is configured, >= 32 chars, >= 12 distinct chars, and no CHANGE_ME."""
     if not JWT_SECRET or len(JWT_SECRET) < 32:
